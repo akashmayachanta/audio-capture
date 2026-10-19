@@ -80,7 +80,7 @@ markers). Files are `.part` while recording.
 
 `%APPDATA%\MeetRec\config.toml` (override with `MEETREC_CONFIG`): capture_mode,
 mic_device, output_dir, bitrate_kbps, auto_record, trigger_apps,
-release_grace_secs (20), min_duration_secs (30), hotkeys, start_with_windows.
+release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows.
 Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more).
 
 ## Known open issues

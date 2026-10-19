@@ -61,7 +61,7 @@ impl Default for Config {
             bitrate_kbps: 24,
             auto_record: true,
             trigger_apps: KNOWN_APPS.iter().map(|s| s.to_string()).collect(),
-            release_grace_secs: 20,
+            release_grace_secs: 10,
             min_duration_secs: 30,
             hotkeys: Hotkeys::default(),
             start_with_windows: false,
@@ -163,7 +163,7 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.capture_mode, CaptureMode::Both);
         assert!(c.auto_record);
-        assert_eq!(c.release_grace_secs, 20);
+        assert_eq!(c.release_grace_secs, 10);
         assert_eq!(c.min_duration_secs, 30);
         assert_eq!(c.bitrate_kbps, 24);
         assert!(!c.start_with_windows);
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(c.capture_mode, CaptureMode::System);
         assert_eq!(c.hotkeys.pause, "F9");
         assert_eq!(c.hotkeys.start_stop, "ctrl+alt+R");
-        assert_eq!(c.release_grace_secs, 20);
+        assert_eq!(c.release_grace_secs, 10);
     }
 
     #[test]

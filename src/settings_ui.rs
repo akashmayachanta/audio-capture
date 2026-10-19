@@ -32,6 +32,8 @@ pub fn join_trigger_apps(known: &[(String, bool)], custom: &str) -> Vec<String> 
         .collect()
 }
 
+const WINDOW_SIZE: [f32; 2] = [420.0, 640.0];
+
 pub fn run(config_path: PathBuf) -> Result<()> {
     let config = Config::load_or_create(&config_path);
     // Device enumeration needs an MTA thread; eframe's main thread is STA.
@@ -45,7 +47,7 @@ pub fn run(config_path: PathBuf) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MeetRec settings")
-            .with_inner_size([420.0, 580.0])
+            .with_inner_size(WINDOW_SIZE)
             .with_resizable(false),
         ..Default::default()
     };
@@ -94,21 +96,37 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.form(ui));
-            ui.separator();
+        self.layout(ui);
+    }
+}
+
+impl SettingsApp {
+    /// Save/Cancel are pinned to the bottom; the form scrolls in the space
+    /// above. Returns the button row's rect (for tests).
+    fn layout(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        let mut buttons = egui::Rect::NOTHING;
+        egui::Panel::bottom("buttons").show(ui, |ui| {
+            ui.add_space(4.0);
             if let Some(err) = &self.error {
                 ui.colored_label(egui::Color32::RED, err);
             }
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() && self.save() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                if ui.button("Cancel").clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
+            buttons = ui
+                .horizontal(|ui| {
+                    if ui.button("Save").clicked() && self.save() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                })
+                .response
+                .rect;
+            ui.add_space(4.0);
         });
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.form(ui));
+        });
+        buttons
     }
 }
 
@@ -235,6 +253,22 @@ mod tests {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.form(ui));
             out.textures_delta.clear(); // no renderer to hand the font atlas to
         }
+    }
+
+    #[test]
+    fn save_and_cancel_fit_in_the_default_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path().join("config.toml"), Config::default());
+        app.error = Some("Could not save: disk full".into());
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::from(WINDOW_SIZE));
+        let ctx = egui::Context::default();
+        let mut buttons = egui::Rect::NOTHING;
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| buttons = app.layout(ui));
+            out.textures_delta.clear();
+        }
+        assert!(screen.contains_rect(buttons), "buttons {buttons:?} outside window {screen:?}");
     }
 
     #[test]

@@ -7,7 +7,7 @@ diarization.
 
 - **Auto-record**: starts when an allow-listed app (Teams, Zoom, Webex, Slack,
   Chrome, Edge, Firefox, or any exe you add) starts using the microphone. Stops
-  after the mic has been released for `release_grace_secs` (default 20 s).
+  after the mic has been released for `release_grace_secs` (default 10 s).
 - **Manual**: start/stop, pause/resume, split and markers from the tray menu or
   hotkeys. Manual recordings are only stopped manually.
 - **Capture mode**: mic + system (stereo), mic only or system only (mono).
@@ -83,7 +83,7 @@ output_dir = "C:\\Users\\me\\Documents\\MeetRec"
 bitrate_kbps = 24              # per channel
 auto_record = true
 trigger_apps = ["Teams", "Zoom", "Webex", "Slack", "Chrome", "Edge", "Firefox"]
-release_grace_secs = 20
+release_grace_secs = 10
 min_duration_secs = 30
 start_with_windows = false
 
@@ -125,3 +125,21 @@ cargo test --lib             # unit tests
 cargo test --lib -- --ignored  # + tests that need real audio devices
 meetrec.exe --record-test 60 out.opus   # 60 s capture spike, no tray
 ```
+
+### Updating after a code change
+
+Windows locks the exe while the tray is running, so quit it first with tray menu
+→ **Quit**. That also closes any recording in progress cleanly. The settings
+window runs from the same exe, so changes to it also need a rebuild.
+
+```powershell
+# 1. tray menu → Quit   (fallback: taskkill /f /im meetrec.exe; an open
+#                        recording is then finalized as "recovered" on next start)
+cargo build --release                       # LTO build: needs plenty of RAM, takes a few minutes
+Start-Process .\target\release\meetrec.exe  # start the tray again
+```
+
+The "start with Windows" entry points at `target\release\meetrec.exe`, so it
+picks up the new build automatically. Changing a default in `src/config.rs`
+doesn't change an existing `config.toml`, which keeps the value it already has.
+Edit that value in Settings.
