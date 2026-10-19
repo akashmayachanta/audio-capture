@@ -28,6 +28,8 @@ via tray menu / hotkeys. See `README.md` for user-facing docs and
 - `.cargo/config.toml` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5` so libopus
   (built statically by `audiopus_sys`) configures under CMake 4.
 - `cargo build --release` → `target\release\meetrec.exe` (~8.5 MB).
+  `.\build.ps1` wraps it: puts the VS-bundled CMake on PATH (via vswhere) and
+  refuses if MeetRec runs from the output exe (`-Dev`, `-Test`, `-Start`, `-Force`).
 - `build.rs` generates the exe icon and embeds version info + a DPI-aware
   manifest (`assets/meetrec.manifest`) via `winresource`.
 
@@ -82,7 +84,7 @@ markers). Files are `.part` while recording.
 ## Config
 
 `%APPDATA%\MeetRec\config.toml` (override with `MEETREC_CONFIG`): capture_mode,
-mic_device, output_dir, bitrate_kbps, auto_record, trigger_apps,
+mic_device, system_device (render endpoint for loopback), output_dir, bitrate_kbps, auto_record, trigger_apps,
 release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows.
 Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more).
 

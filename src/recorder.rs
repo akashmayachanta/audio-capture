@@ -45,6 +45,7 @@ impl Recorder {
     pub fn start(config: &Config, trigger: Trigger, app: Option<String>) -> Result<Self> {
         let ring = || HeapRb::<f32>::new(SAMPLE_RATE as usize * 2).split();
         let mic_id = Some(config.mic_device.clone()).filter(|s| !s.is_empty());
+        let sys_id = Some(config.system_device.clone()).filter(|s| !s.is_empty());
         let mut captures = Vec::new();
         let mut mic = None;
         let mut sys = None;
@@ -55,7 +56,7 @@ impl Recorder {
         }
         if matches!(config.capture_mode, CaptureMode::System | CaptureMode::Both) {
             let (p, c) = ring();
-            captures.push(CaptureStream::spawn(Source::System, None, p));
+            captures.push(CaptureStream::spawn(Source::System, sys_id, p));
             sys = Some(c);
         }
         let info = SessionInfo {

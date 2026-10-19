@@ -24,6 +24,10 @@ pub struct Config {
     pub capture_mode: CaptureMode,
     /// Endpoint id of the mic; empty = Windows default.
     pub mic_device: String,
+    /// Endpoint id of the speakers/headset whose output is recorded as
+    /// "others"; empty = Windows default. Meeting apps can play to a device
+    /// other than the default, which would leave that channel silent.
+    pub system_device: String,
     pub output_dir: PathBuf,
     /// Per channel.
     pub bitrate_kbps: u32,
@@ -57,6 +61,7 @@ impl Default for Config {
         Self {
             capture_mode: CaptureMode::Both,
             mic_device: String::new(),
+            system_device: String::new(),
             output_dir: documents.join("MeetRec"),
             bitrate_kbps: 24,
             auto_record: true,
@@ -168,6 +173,7 @@ mod tests {
         assert_eq!(c.bitrate_kbps, 24);
         assert!(!c.start_with_windows);
         assert_eq!(c.mic_device, "");
+        assert_eq!(c.system_device, "");
         assert_eq!(c.trigger_apps, KNOWN_APPS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(c.hotkeys.start_stop, "ctrl+alt+R");
         assert_eq!(c.hotkeys.pause, "ctrl+alt+P");
@@ -180,6 +186,7 @@ mod tests {
     fn round_trips_through_toml() {
         let mut c = Config::default();
         c.capture_mode = CaptureMode::Mic;
+        c.system_device = "{headset}".into();
         c.trigger_apps = vec!["Zoom".into()];
         c.hotkeys.split = "ctrl+shift+X".into();
         assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);

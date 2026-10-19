@@ -34,6 +34,18 @@ pub fn join_trigger_apps(known: &[(String, bool)], custom: &str) -> Vec<String> 
         .collect()
 }
 
+/// Combo-box text for a configured endpoint id; empty = Windows default.
+pub fn device_label(id: &str, devices: &[DeviceInfo]) -> String {
+    if id.is_empty() {
+        return "Windows default".into();
+    }
+    devices
+        .iter()
+        .find(|d| d.id == id)
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "(device not connected)".into())
+}
+
 const WINDOW_SIZE: [f32; 2] = [420.0, 640.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,13 +57,16 @@ pub enum Tab {
 pub fn run(config_path: PathBuf, tab: Tab) -> Result<()> {
     let config = Config::load_or_create(&config_path);
     // Device enumeration needs an MTA thread; eframe's main thread is STA.
-    let mics = std::thread::spawn(|| {
+    let (mics, speakers) = std::thread::spawn(|| {
         let _ = wasapi::initialize_mta();
-        device::list(wasapi::Direction::Capture).unwrap_or_default()
+        (
+            device::list(wasapi::Direction::Capture).unwrap_or_default(),
+            device::list(wasapi::Direction::Render).unwrap_or_default(),
+        )
     })
     .join()
     .unwrap_or_default();
-    let app = SettingsApp::new(config_path, config, mics, tab);
+    let app = SettingsApp::new(config_path, config, mics, speakers, tab);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MeetRec")
@@ -69,16 +84,17 @@ struct SettingsApp {
     path: PathBuf,
     config: Config,
     mics: Vec<DeviceInfo>,
+    speakers: Vec<DeviceInfo>,
     known: Vec<(String, bool)>,
     custom: String,
     error: Option<String>,
 }
 
 impl SettingsApp {
-    fn new(path: PathBuf, config: Config, mics: Vec<DeviceInfo>, tab: Tab) -> Self {
+    fn new(path: PathBuf, config: Config, mics: Vec<DeviceInfo>, speakers: Vec<DeviceInfo>, tab: Tab) -> Self {
         let (known, custom) = split_trigger_apps(&config.trigger_apps);
         let recordings = RecordingsTab::new(config.output_dir.clone());
-        Self { tab, recordings, path, config, mics, known, custom, error: None }
+        Self { tab, recordings, path, config, mics, speakers, known, custom, error: None }
     }
 
     fn save(&mut self) -> bool {
@@ -91,17 +107,6 @@ impl SettingsApp {
                 false
             }
         }
-    }
-
-    fn mic_label(&self) -> String {
-        if self.config.mic_device.is_empty() {
-            return "Windows default".into();
-        }
-        self.mics
-            .iter()
-            .find(|d| d.id == self.config.mic_device)
-            .map(|d| d.name.clone())
-            .unwrap_or_else(|| "(device not connected)".into())
     }
 }
 
@@ -163,7 +168,8 @@ impl SettingsApp {
 
 impl SettingsApp {
     fn form(&mut self, ui: &mut egui::Ui) {
-        let label = self.mic_label();
+        let mic_label = device_label(&self.config.mic_device, &self.mics);
+        let speaker_label = device_label(&self.config.system_device, &self.speakers);
         let c = &mut self.config;
 
         ui.heading("Capture");
@@ -172,14 +178,23 @@ impl SettingsApp {
         ui.radio_value(&mut c.capture_mode, CaptureMode::System, "System audio only");
 
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        egui::Grid::new("devices").num_columns(2).show(ui, |ui| {
             ui.label("Microphone");
-            egui::ComboBox::from_id_salt("mic").selected_text(label).width(280.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("mic").selected_text(mic_label).width(280.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut c.mic_device, String::new(), "Windows default");
                 for d in &self.mics {
                     ui.selectable_value(&mut c.mic_device, d.id.clone(), &d.name);
                 }
             });
+            ui.end_row();
+            ui.label("Speakers").on_hover_text("The device your meeting app plays to; its output is recorded as \"others\"");
+            egui::ComboBox::from_id_salt("speakers").selected_text(speaker_label).width(280.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut c.system_device, String::new(), "Windows default");
+                for d in &self.speakers {
+                    ui.selectable_value(&mut c.system_device, d.id.clone(), &d.name);
+                }
+            });
+            ui.end_row();
         });
 
         ui.add_space(10.0);
@@ -269,9 +284,10 @@ mod tests {
 
     fn app_with(path: PathBuf, mut config: Config) -> SettingsApp {
         let mics = vec![DeviceInfo { id: "{mic-1}".into(), name: "Headset Mic".into() }];
+        let speakers = vec![DeviceInfo { id: "{out-1}".into(), name: "Headset Earphone".into() }];
         // Never list the real recordings folder from a test.
         config.output_dir = path.with_file_name("recordings");
-        SettingsApp::new(path, config, mics, Tab::Settings)
+        SettingsApp::new(path, config, mics, speakers, Tab::Settings)
     }
 
     /// Runs two frames of the whole window (the first only measures).
@@ -315,8 +331,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = Config::default();
         config.mic_device = "{mic-1}".into();
+        config.system_device = "{out-1}".into();
         let mut app = app_with(dir.path().join("config.toml"), config);
-        assert_eq!(app.mic_label(), "Headset Mic");
+        assert_eq!(device_label(&app.config.mic_device, &app.mics), "Headset Mic");
+        assert_eq!(device_label(&app.config.system_device, &app.speakers), "Headset Earphone");
         let ctx = egui::Context::default();
         for _ in 0..2 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.form(ui));
@@ -349,11 +367,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_mic_id_is_labelled_disconnected() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.mic_device = "{gone}".into();
-        assert_eq!(app_with(dir.path().join("c.toml"), config).mic_label(), "(device not connected)");
+    fn unknown_device_id_is_labelled_disconnected() {
+        let devices = vec![DeviceInfo { id: "{mic-1}".into(), name: "Headset Mic".into() }];
+        assert_eq!(device_label("{gone}", &devices), "(device not connected)");
+    }
+
+    #[test]
+    fn empty_device_id_is_the_windows_default() {
+        assert_eq!(device_label("", &[]), "Windows default");
     }
 
     #[test]

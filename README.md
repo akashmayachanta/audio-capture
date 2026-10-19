@@ -88,6 +88,7 @@ fields are optional:
 ```toml
 capture_mode = "both"          # both | mic | system
 mic_device = ""                # endpoint id; empty = Windows default
+system_device = ""             # speakers/headset to record "others" from; empty = Windows default
 output_dir = "C:\\Users\\me\\Documents\\MeetRec"
 bitrate_kbps = 24              # per channel
 auto_record = true
@@ -108,7 +109,9 @@ Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).
 ## How it works
 
 - **Capture**: WASAPI shared mode, polling. The mic comes from the capture endpoint;
-  system audio comes from the default render endpoint in loopback. Windows converts
+  system audio comes from a render endpoint in loopback. Both default to the Windows
+  default device. A meeting app set to a specific headset doesn't change the Windows
+  default, so pick the same devices in Settings. Windows converts
   both to 48 kHz mono float. Stalls are filled with silence, because loopback is
   silent while nothing plays. A stream reopens on the new default device when the
   default changes or a device is unplugged, and keeps writing to the same file.
@@ -128,8 +131,13 @@ Requires Rust (MSVC toolchain), the Visual Studio C++ build tools and CMake, whi
 builds libopus statically. `.cargo/config.toml` sets `CMAKE_POLICY_VERSION_MINIMUM`
 so libopus builds with CMake 4.
 
+`build.ps1` finds the CMake bundled with the VS build tools, checks that MeetRec
+isn't locking the exe, and builds (`-Dev` debug build, `-Test` run unit tests first,
+`-Start` launch the tray afterwards, `-Force` kill a running MeetRec):
+
 ```
-cargo build --release        # target\release\meetrec.exe
+.\build.ps1 -Test -Start     # target\release\meetrec.exe
+cargo build --release        # same, if CMake is already on PATH
 cargo test --lib             # unit tests
 cargo test --lib -- --ignored  # + tests that need real audio devices
 meetrec.exe --record-test 60 out.opus   # 60 s capture spike, no tray
@@ -144,8 +152,7 @@ window runs from the same exe, so changes to it also need a rebuild.
 ```powershell
 # 1. tray menu → Quit   (fallback: taskkill /f /im meetrec.exe; an open
 #                        recording is then finalized as "recovered" on next start)
-cargo build --release                       # LTO build: needs plenty of RAM, takes a few minutes
-Start-Process .\target\release\meetrec.exe  # start the tray again
+.\build.ps1 -Start                          # LTO build: needs plenty of RAM, takes a few minutes; then starts the tray
 ```
 
 The "start with Windows" entry points at `target\release\meetrec.exe`, so it

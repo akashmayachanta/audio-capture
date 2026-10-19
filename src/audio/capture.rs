@@ -45,7 +45,8 @@ pub struct CaptureStream {
 }
 
 impl CaptureStream {
-    /// `device_id` picks a specific mic; `None` (and always for System) follows the default.
+    /// `device_id` picks a specific endpoint (mic, or render endpoint for
+    /// System loopback); `None` follows the default.
     pub fn spawn(source: Source, device_id: Option<String>, prod: HeapProd<f32>) -> Self {
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
@@ -189,7 +190,7 @@ fn run_stream(
 ) -> Result<()> {
     let device = match source {
         Source::Mic => device::open(Direction::Capture, device_id)?,
-        Source::System => device::open(Direction::Render, None)?,
+        Source::System => device::open(Direction::Render, device_id)?,
     };
     let name = device.get_friendlyname().unwrap_or_default();
     let mut client = device.get_iaudioclient()?;
