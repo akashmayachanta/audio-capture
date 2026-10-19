@@ -11,3 +11,6 @@ pub mod detect;
 pub mod autostart;
 pub mod settings_ui;
 pub mod power;
+pub mod playback;
+pub mod recordings;
+pub mod recordings_ui;

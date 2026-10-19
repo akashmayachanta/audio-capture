@@ -1,0 +1,5 @@
+Split the app into two processes
+
+This architecture makes the Rust vs .NET memory question mostly go away. The first process is a tiny background agent that runs all the time. It handles the tray icon, meeting detection, capture, and encoding, and it should be small, stable, and AOT-compiled or written in Rust. The second is a library and playback window that launches only when the user clicks “Open recordings.” It can be as heavy as you like because it isn’t resident all day. It exits when closed and talks to the agent via named pipes, or just reads the recordings folder plus a small SQLite index.
+
+This way the always-on footprint is ~5 MB (Rust) or ~10–15 MB (.NET AOT), and the playback UI’s memory only exists while someone is using it. It also isolates crashes: a bug in the player UI never kills an active recording.

@@ -35,8 +35,9 @@ via tray menu / hotkeys. See `README.md` for user-facing docs and
 
 - `meetrec.exe` — tray process (default). Single instance via the
   `Local\MeetRec.Tray` mutex. Never loads the GUI stack.
-- `meetrec.exe --settings` — egui settings window (separate short-lived
-  process); edits `config.toml`, the tray hot-reloads it.
+- `meetrec.exe --settings` / `--recordings` — egui window (separate
+  short-lived process) with a Settings tab (edits `config.toml`, the tray
+  hot-reloads it) and a Recordings tab (lists and plays recordings).
 - `meetrec.exe --record-test [secs] [out.opus]` — capture spike without the tray.
 
 ## Architecture
@@ -66,7 +67,9 @@ device-change events
 | `src/detect/mic_usage.rs` | polls `HKCU\…\CapabilityAccessManager\ConsentStore\microphone`; in use = `LastUsedTimeStart > 0 && LastUsedTimeStop == 0`; excludes our own exe |
 | `src/tray.rs`, `src/hotkeys.rs` | tray icon/menu (`tray-icon`/`muda`), global hotkeys |
 | `src/config.rs` | `config.toml` (serde defaults, sanitizing, mtime watcher) |
-| `src/settings_ui.rs` | egui settings window |
+| `src/settings_ui.rs` | egui window: tab bar + Settings tab |
+| `src/recordings_ui.rs`, `src/recordings.rs` | Recordings tab; listing `output_dir` with sidecars |
+| `src/playback/` | `reader.rs` Ogg Opus decoder (any mapping, page index, sample-accurate seek), `mix.rs` L/R → both ears (Both / Me / Others), `player.rs` `Transport` (testable) + WASAPI render thread |
 | `src/autostart.rs` | HKCU `Run` key |
 | `src/power.rs` | suspend/resume notifications (closes recording before sleep) |
 
@@ -89,6 +92,14 @@ Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more).
   recording costs ~16% of one core (idle 0.2%). `CFLAGS` won't help (filtered);
   candidates: `CL=/O2` in `.cargo/config.toml` `[env]`, or `CMAKE_GENERATOR=Ninja`.
   Unverified.
+- Windows Media Player (Web Media Extensions' Opus decoder) plays only the
+  first stream of the family-1 stereo files, i.e. just the mic. That's why the
+  Recordings tab decodes in-process.
+- `audio::capture::tests::stream_stays_continuous_across_a_restart` (ignored)
+  fails on the Intel SST mic: the first open took >1 s, and a rerun got 0.52 s
+  of audio for 2 s. Suspected cause, unverified: `Clock::push` re-anchors when
+  the first packet after a long open/restart arrives, before `fill_gap` pads
+  the stall, so the gap is lost.
 - Shutdown/sign-out mid-recording is not handled (no `WM_ENDSESSION`); the file
   is finalized as "recovered" on next start.
 - Deferred minors: mixer slow-side drift only corrected by underrun; config

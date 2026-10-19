@@ -34,6 +34,13 @@ A toast appears when an auto recording starts. **Settings…** in the tray menu
 opens the settings window (`meetrec.exe --settings`). It edits the config file,
 and the tray picks up changes live.
 
+**Recordings…** opens the same window on its Recordings tab
+(`meetrec.exe --recordings`). It lists your recordings, newest first. Click one
+to load it, or double-click to play it. The controls are Play/Pause, Stop, a
+seek bar, and volume (up to 200% for quiet mics). You can listen to **Both**
+sides mixed into both ears, **Me only** (the mic, left channel), or **Others
+only** (system audio, right channel).
+
 ## Output
 
 ```
@@ -44,7 +51,9 @@ and the tray picks up changes live.
 - While recording, files are named `*.opus.part` / `*.json.part`. They are
   renamed when the recording closes, so a watcher only ever sees finished files.
 - Stereo files use two **uncoupled** Opus streams (channel mapping family 1).
-  The encoder never blends left and right.
+  The encoder never blends left and right. Windows Media Player can't decode
+  this layout and plays only the mic, so it sounds muffled and the others are
+  missing. Use the Recordings tab, VLC or ffmpeg instead.
 - An Ogg page is flushed every second. After a crash, the leftover `.part` files
   are finalized on the next start with `"status": "recovered"`.
 - Auto recordings shorter than `min_duration_secs` (default 30 s) are discarded.

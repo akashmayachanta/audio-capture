@@ -9,6 +9,7 @@ use meetrec::audio::capture::{CaptureStream, Source};
 use meetrec::audio::mixer::Mixer;
 use meetrec::audio::SAMPLE_RATE;
 use meetrec::config;
+use meetrec::settings_ui::Tab;
 use meetrec::encode::opus_ogg::OggOpusWriter;
 use ringbuf::traits::Split;
 use ringbuf::HeapRb;
@@ -31,17 +32,18 @@ fn main() -> Result<()> {
             let path = args.get(3).cloned().unwrap_or_else(|| "record-test.opus".into());
             record_test(secs, &path)
         }
-        Some("--settings") => run_settings(),
+        Some("--settings") => run_settings(Tab::Settings),
+        Some("--recordings") => run_settings(Tab::Recordings),
         _ => run_tray(),
     }
 }
 
-fn run_settings() -> Result<()> {
+fn run_settings(tab: Tab) -> Result<()> {
     let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\MeetRec.Settings"))? };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         return Ok(()); // a settings window is already open
     }
-    meetrec::settings_ui::run(config::config_path())
+    meetrec::settings_ui::run(config::config_path(), tab)
 }
 
 fn run_tray() -> Result<()> {

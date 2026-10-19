@@ -111,7 +111,8 @@ impl<W: Write> OggOpusWriter<W> {
         }
         self.samples += FRAME as u64;
         let packet = self.buf[..len as usize].to_vec();
-        if let Some((prev, granule)) = self.held.replace((packet, self.pre_skip + self.samples)) {
+        // Granule = samples decoded through this packet, pre-skip included (RFC 7845 §4).
+        if let Some((prev, granule)) = self.held.replace((packet, self.samples)) {
             self.packets_in_page += 1;
             let end_page = self.packets_in_page >= PACKETS_PER_PAGE;
             let info = if end_page { PacketWriteEndInfo::EndPage } else { PacketWriteEndInfo::NormalPacket };
@@ -131,11 +132,13 @@ impl<W: Write> OggOpusWriter<W> {
 
     /// Writes the end-of-stream page and returns the inner writer, flushed.
     pub fn finish(mut self) -> Result<W> {
-        if self.held.is_none() {
-            // An Ogg stream needs at least one audio packet to carry the EOS flag.
-            self.write_frame(&vec![0.0; FRAME * self.channels])?;
-        }
-        let (packet, granule) = self.held.take().expect("held packet");
+        let real = self.samples;
+        // The encoder still holds the last pre-skip's worth of audio in its
+        // lookahead: one frame of silence pushes it out, and the final granule
+        // trims the excess. This also gives an empty stream a packet to carry EOS.
+        self.write_frame(&vec![0.0; FRAME * self.channels])?;
+        let (packet, _) = self.held.take().expect("held packet");
+        let granule = self.pre_skip + real;
         self.writer.write_packet(packet, self.serial, PacketWriteEndInfo::EndStream, granule)?;
         let mut w = self.writer.into_inner();
         w.flush()?;
@@ -251,7 +254,7 @@ mod tests {
         let p = packets(encode_stereo(0, frames));
         let skip = pre_skip(&p[0].data);
         let audio = &p[2..];
-        assert_eq!(audio.len(), frames);
+        assert_eq!(audio.len(), frames + 1, "one extra packet flushes the encoder's lookahead");
         let mut last = 0;
         for pk in audio.iter().filter(|pk| pk.last_in_page()) {
             assert!(pk.absgp_page() > last);
@@ -260,6 +263,36 @@ mod tests {
         let end = audio.last().unwrap();
         assert!(end.last_in_stream());
         assert_eq!(end.absgp_page(), skip + (frames * FRAME) as u64);
+    }
+
+    #[test]
+    fn page_granules_count_decoded_samples_including_pre_skip() {
+        // RFC 7845 §4: a page's granule position is the number of samples decoded
+        // through its last packet, pre-skip included. Seeking relies on it.
+        let p = packets(encode_stereo(0, 120));
+        let audio = &p[2..];
+        let mut decoded = 0;
+        for pk in &audio[..audio.len() - 1] {
+            decoded += FRAME as u64;
+            if pk.last_in_page() {
+                assert_eq!(pk.absgp_page(), decoded);
+            }
+        }
+    }
+
+    #[test]
+    fn the_last_samples_are_not_lost_in_the_encoder() {
+        // The final pre-skip's worth of audio still sits in the encoder's
+        // lookahead at finish; it must be flushed out, not dropped.
+        let frames = 50;
+        let p = packets(encode_stereo(0, frames));
+        let skip = pre_skip(&p[0].data) as usize;
+        let end = p.last().unwrap().absgp_page() as usize;
+        let pcm = decode_all(&p);
+        assert!(pcm.len() / 2 >= end, "decoded {} samples, granule says {end}", pcm.len() / 2);
+        let tail: Vec<f32> = pcm[(end - skip / 2) * 2..end * 2].iter().step_by(2).copied().collect();
+        let tail_rms = (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
+        assert!(tail_rms > 0.2, "the final samples are silent (rms {tail_rms})");
     }
 
     #[test]
@@ -275,27 +308,30 @@ mod tests {
         assert!(p.len() >= 2 + 50, "only {} packets readable", p.len());
     }
 
-    fn decode_rms(data: Vec<u8>) -> (f32, f32) {
-        let p = packets(data);
+    /// Every sample the stereo packets decode to (pre-skip included), interleaved.
+    fn decode_all(p: &[ogg::Packet]) -> Vec<f32> {
         let mut err = 0;
         let mapping = [0u8, 1];
         let dec = unsafe { ffi::opus_multistream_decoder_create(48_000, 2, 2, 0, mapping.as_ptr(), &mut err) };
         assert_eq!(err, ffi::OPUS_OK);
-        let (mut l, mut r, mut n) = (0f64, 0f64, 0usize);
+        let mut out = Vec::new();
         let mut pcm = vec![0f32; 5760 * 2];
         for pk in &p[2..] {
             let got = unsafe {
                 ffi::opus_multistream_decode_float(dec, pk.data.as_ptr(), pk.data.len() as i32, pcm.as_mut_ptr(), 5760, 0)
             };
             assert!(got > 0);
-            for f in 0..got as usize {
-                l += (pcm[f * 2] as f64).powi(2);
-                r += (pcm[f * 2 + 1] as f64).powi(2);
-            }
-            n += got as usize;
+            out.extend_from_slice(&pcm[..got as usize * 2]);
         }
         unsafe { ffi::opus_multistream_decoder_destroy(dec) };
-        (((l / n as f64).sqrt()) as f32, ((r / n as f64).sqrt()) as f32)
+        out
+    }
+
+    fn decode_rms(data: Vec<u8>) -> (f32, f32) {
+        let pcm = decode_all(&packets(data));
+        let n = (pcm.len() / 2) as f64;
+        let power = |ch: usize| pcm.iter().skip(ch).step_by(2).map(|&s| (s as f64).powi(2)).sum::<f64>();
+        ((power(0) / n).sqrt() as f32, (power(1) / n).sqrt() as f32)
     }
 
     #[test]

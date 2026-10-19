@@ -1,5 +1,6 @@
-//! `meetrec.exe --settings`: a small egui window that edits config.toml.
-//! The tray process notices the file change and reloads; it never loads egui.
+//! `meetrec.exe --settings` / `--recordings`: a small egui window with two tabs.
+//! Settings edits config.toml (the tray process notices the change and
+//! reloads; it never loads egui); Recordings lists and plays recordings.
 
 use std::path::PathBuf;
 
@@ -8,6 +9,7 @@ use eframe::egui;
 
 use crate::audio::device::{self, DeviceInfo};
 use crate::config::{CaptureMode, Config, KNOWN_APPS};
+use crate::recordings_ui::RecordingsTab;
 
 /// Known apps as checkboxes, everything else as comma-separated custom names.
 pub fn split_trigger_apps(apps: &[String]) -> (Vec<(String, bool)>, String) {
@@ -34,7 +36,13 @@ pub fn join_trigger_apps(known: &[(String, bool)], custom: &str) -> Vec<String> 
 
 const WINDOW_SIZE: [f32; 2] = [420.0, 640.0];
 
-pub fn run(config_path: PathBuf) -> Result<()> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Recordings,
+    Settings,
+}
+
+pub fn run(config_path: PathBuf, tab: Tab) -> Result<()> {
     let config = Config::load_or_create(&config_path);
     // Device enumeration needs an MTA thread; eframe's main thread is STA.
     let mics = std::thread::spawn(|| {
@@ -43,19 +51,21 @@ pub fn run(config_path: PathBuf) -> Result<()> {
     })
     .join()
     .unwrap_or_default();
-    let app = SettingsApp::new(config_path, config, mics);
+    let app = SettingsApp::new(config_path, config, mics, tab);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("MeetRec settings")
+            .with_title("MeetRec")
             .with_inner_size(WINDOW_SIZE)
             .with_resizable(false),
         ..Default::default()
     };
-    eframe::run_native("MeetRec settings", options, Box::new(|_cc| Ok(Box::new(app))))
+    eframe::run_native("MeetRec", options, Box::new(|_cc| Ok(Box::new(app))))
         .map_err(|e| anyhow::anyhow!("settings window: {e}"))
 }
 
 struct SettingsApp {
+    tab: Tab,
+    recordings: RecordingsTab,
     path: PathBuf,
     config: Config,
     mics: Vec<DeviceInfo>,
@@ -65,9 +75,10 @@ struct SettingsApp {
 }
 
 impl SettingsApp {
-    fn new(path: PathBuf, config: Config, mics: Vec<DeviceInfo>) -> Self {
+    fn new(path: PathBuf, config: Config, mics: Vec<DeviceInfo>, tab: Tab) -> Self {
         let (known, custom) = split_trigger_apps(&config.trigger_apps);
-        Self { path, config, mics, known, custom, error: None }
+        let recordings = RecordingsTab::new(config.output_dir.clone());
+        Self { tab, recordings, path, config, mics, known, custom, error: None }
     }
 
     fn save(&mut self) -> bool {
@@ -101,9 +112,29 @@ impl eframe::App for SettingsApp {
 }
 
 impl SettingsApp {
-    /// Save/Cancel are pinned to the bottom; the form scrolls in the space
-    /// above. Returns the button row's rect (for tests).
+    /// Tabs on top; each tab pins its controls (Save/Cancel, the player) to the
+    /// bottom and scrolls its content above. Returns the bottom row's rect (for tests).
     fn layout(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        egui::Panel::top("tabs").show(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Recordings, "Recordings");
+                ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
+            });
+            ui.add_space(4.0);
+        });
+        match self.tab {
+            Tab::Settings => self.settings_tab(ui),
+            Tab::Recordings => {
+                let mut controls = egui::Rect::NOTHING;
+                egui::Panel::bottom("player").show(ui, |ui| controls = self.recordings.controls(ui));
+                egui::CentralPanel::default().show(ui, |ui| self.recordings.list(ui));
+                controls
+            }
+        }
+    }
+
+    fn settings_tab(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let mut buttons = egui::Rect::NOTHING;
         egui::Panel::bottom("buttons").show(ui, |ui| {
             ui.add_space(4.0);
@@ -236,9 +267,47 @@ mod tests {
         assert_eq!(join_trigger_apps(&known, " Discord ,, Signal, "), s(&["Teams", "Chrome", "Discord", "Signal"]));
     }
 
-    fn app_with(path: PathBuf, config: Config) -> SettingsApp {
+    fn app_with(path: PathBuf, mut config: Config) -> SettingsApp {
         let mics = vec![DeviceInfo { id: "{mic-1}".into(), name: "Headset Mic".into() }];
-        SettingsApp::new(path, config, mics)
+        // Never list the real recordings folder from a test.
+        config.output_dir = path.with_file_name("recordings");
+        SettingsApp::new(path, config, mics, Tab::Settings)
+    }
+
+    /// Runs two frames of the whole window (the first only measures).
+    fn lay_out(app: &mut SettingsApp) -> egui::Rect {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::from(WINDOW_SIZE));
+        let ctx = egui::Context::default();
+        let mut bottom = egui::Rect::NOTHING;
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| bottom = app.layout(ui));
+            out.textures_delta.clear(); // no renderer to hand the font atlas to
+        }
+        assert!(screen.contains_rect(bottom), "bottom row {bottom:?} outside window {screen:?}");
+        bottom
+    }
+
+    #[test]
+    fn recordings_tab_lists_and_its_player_fits_in_the_default_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path().join("config.toml"), Config::default());
+        let month = dir.path().join("recordings").join("2026").join("10");
+        std::fs::create_dir_all(&month).unwrap();
+        for i in 0..40 {
+            std::fs::write(month.join(format!("2026-10-19_10{i:02}_Chrome.opus")), b"OggS").unwrap();
+        }
+        app.recordings.refresh();
+        app.tab = Tab::Recordings;
+        lay_out(&mut app);
+    }
+
+    #[test]
+    fn recordings_tab_with_no_recordings_lays_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path().join("config.toml"), Config::default());
+        app.tab = Tab::Recordings;
+        lay_out(&mut app);
     }
 
     #[test]
@@ -260,15 +329,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with(dir.path().join("config.toml"), Config::default());
         app.error = Some("Could not save: disk full".into());
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::from(WINDOW_SIZE));
-        let ctx = egui::Context::default();
-        let mut buttons = egui::Rect::NOTHING;
-        for _ in 0..2 {
-            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
-            let mut out = ctx.run_ui(input, |ui| buttons = app.layout(ui));
-            out.textures_delta.clear();
-        }
-        assert!(screen.contains_rect(buttons), "buttons {buttons:?} outside window {screen:?}");
+        lay_out(&mut app);
     }
 
     #[test]

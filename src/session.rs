@@ -552,6 +552,9 @@ mod tests {
         drop(s.close(at(12, 0, 0), 0.0).unwrap());
     }
 
+    /// Seconds of audio still inside the Opus encoder (312 samples) when a recording crashes.
+    const LOOKAHEAD: f64 = 0.01;
+
     #[test]
     fn crashed_session_is_recovered_with_audio_duration() {
         let dir = tempfile::tempdir().unwrap();
@@ -570,8 +573,9 @@ mod tests {
         let meta = read_meta(&path.with_extension("json"));
         assert_eq!(meta.status, Status::Recovered);
         assert_eq!(meta.apps, vec!["Teams".to_string()]);
-        // Pages are flushed every second, so at least 2 of the 3 seconds survive.
-        assert!(meta.duration_secs >= 2.0 && meta.duration_secs <= 3.0, "{}", meta.duration_secs);
+        // Pages are flushed every second, so at least 2 of the 3 seconds survive
+        // (less the encoder lookahead, which a crash never flushes).
+        assert!(meta.duration_secs >= 2.0 - LOOKAHEAD && meta.duration_secs <= 3.0, "{}", meta.duration_secs);
         assert!(meta.end.is_some());
         assert!(walk(dir.path()).iter().all(|p| !p.to_string_lossy().ends_with(".part")));
     }
@@ -609,7 +613,7 @@ mod tests {
         assert_eq!(recovered.len(), 1);
         let meta = read_meta(&recovered[0].with_extension("json"));
         assert_eq!(meta.status, Status::Recovered);
-        assert!(meta.duration_secs >= 1.0);
+        assert!(meta.duration_secs >= 1.0 - LOOKAHEAD, "{}", meta.duration_secs);
     }
 
     #[test]
@@ -623,7 +627,7 @@ mod tests {
         let recovered = recover_parts(dir.path()).unwrap();
         let meta = read_meta(&recovered[0].with_extension("json"));
         assert_eq!(meta.status, Status::Recovered);
-        assert!(meta.duration_secs >= 1.0);
+        assert!(meta.duration_secs >= 1.0 - LOOKAHEAD, "{}", meta.duration_secs);
     }
 
     fn walk(dir: &Path) -> Vec<PathBuf> {

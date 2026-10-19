@@ -191,16 +191,18 @@ impl App {
                     tracing::warn!("open folder: {e}");
                 }
             }
-            MenuCommand::Settings => self.open_settings(),
+            MenuCommand::Recordings => self.open_window("--recordings"),
+            MenuCommand::Settings => self.open_window("--settings"),
             MenuCommand::Quit => self.quit = true,
         }
         self.tray.sync_checks(&self.config);
     }
 
-    fn open_settings(&self) {
-        let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--settings").spawn());
+    /// The settings/recordings window runs as its own short-lived process.
+    fn open_window(&self, arg: &str) {
+        let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(arg).spawn());
         if let Err(e) = spawned {
-            tracing::warn!("open settings: {e}");
+            tracing::warn!("open {arg}: {e}");
         }
     }
 
