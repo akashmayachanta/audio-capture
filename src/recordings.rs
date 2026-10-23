@@ -13,11 +13,23 @@ pub struct Recording {
     pub meta: Option<Meta>,
     /// Start time (from the sidecar, else the file's modification time); sort key.
     pub when: DateTime<Local>,
+    /// A `<same name>.md` transcript sits next to the recording.
+    pub transcribed: bool,
 }
 
 impl Recording {
-    /// One line for the list, e.g. `2026-10-19 10:15 · Chrome · 0:38`.
+    /// One line for the list, e.g. `2026-10-19 10:15 · Chrome · 0:38`, with a
+    /// `· transcribed` suffix once a transcript exists.
     pub fn label(&self) -> String {
+        let mut label = self.summary();
+        if self.transcribed {
+            label.push_str(" · transcribed");
+        }
+        label
+    }
+
+    /// `label` without the transcript suffix.
+    pub fn summary(&self) -> String {
         let Some(m) = &self.meta else {
             return self.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         };
@@ -47,7 +59,8 @@ pub fn list(output_dir: &Path) -> Vec<Recording> {
             let when = meta.as_ref().map(|m| m.start).unwrap_or_else(|| {
                 std::fs::metadata(&path).and_then(|m| m.modified()).map_or_else(|_| Local::now(), Into::into)
             });
-            Recording { path, meta, when }
+            let transcribed = crate::transcribe::transcript::md_path(&path).is_file();
+            Recording { path, meta, when, transcribed }
         })
         .collect();
     out.sort_by(|a, b| b.when.cmp(&a.when).then_with(|| b.path.cmp(&a.path)));
@@ -117,7 +130,7 @@ mod tests {
 
     fn rec(meta: Option<Meta>) -> Recording {
         let when = meta.as_ref().map_or(at(10, 19, 9, 0), |m| m.start);
-        Recording { path: PathBuf::from("x/2026-10-19_1015_Chrome.opus"), meta, when }
+        Recording { path: PathBuf::from("x/2026-10-19_1015_Chrome.opus"), meta, when, transcribed: false }
     }
 
     #[test]
@@ -164,6 +177,26 @@ mod tests {
     fn label_names_manual_recordings_and_flags_recovered_ones() {
         let r = rec(Some(meta(at(10, 19, 10, 4), &[], Trigger::Manual, Status::Recovered, 3725.0)));
         assert_eq!(r.label(), "2026-10-19 10:04 · Manual · 1:02:05 · recovered");
+    }
+
+    #[test]
+    fn label_marks_recordings_that_have_a_transcript() {
+        let mut r = rec(Some(meta(at(10, 19, 10, 15), &["Chrome"], Trigger::Auto, Status::Complete, 38.0)));
+        r.transcribed = true;
+        assert_eq!(r.label(), "2026-10-19 10:15 · Chrome · 0:38 · transcribed");
+        assert_eq!(r.summary(), "2026-10-19 10:15 · Chrome · 0:38");
+    }
+
+    #[test]
+    fn listing_notices_a_transcript_next_to_the_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let done = recording(dir.path(), "2026/10/done", None);
+        let todo = recording(dir.path(), "2026/10/todo", None);
+        std::fs::write(done.with_extension("md"), "# Transcript").unwrap();
+        let found = list(dir.path());
+        assert!(found.iter().find(|r| r.path == done).unwrap().transcribed);
+        assert!(!found.iter().find(|r| r.path == todo).unwrap().transcribed);
+        assert_eq!(found.len(), 2, "the .md is not a recording");
     }
 
     #[test]

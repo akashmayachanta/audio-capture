@@ -41,6 +41,87 @@ seek bar, and volume (up to 200% for quiet mics). You can listen to **Both**
 sides mixed into both ears, **Me only** (the mic, left channel), or **Others
 only** (system audio, right channel).
 
+**Transcripts…** opens the Transcripts window (`meetrec.exe --transcripts`):
+one row per recording with a **Transcribe** button, a status badge and, once the
+transcript exists, **Open .md** / **Show in folder** / **Re-transcribe**. See
+[Transcription](#transcription).
+
+## Transcription
+
+Manual, on-device speech-to-text. Nothing runs by itself: you press Transcribe
+in the Transcripts window (or use the CLI). The mic channel and the system
+channel are transcribed separately, so every line is labelled **Me** or
+**Others** without diarization.
+
+It runs NVIDIA's Parakeet TDT 0.6B v3 (25 European languages, punctuation and
+capitalisation included) through OpenVINO, on the Intel NPU when there is one.
+On a Core Ultra 7 155U a 3-minute stereo clip (6 minutes of channel audio) took
+about 11-14 s on the NPU, 34 s on the iGPU and 80 s on the CPU, which is roughly
+25-34x, 10x and 4x real time. The first NPU compile of the model takes a couple of
+minutes; later runs reuse the compiled blobs.
+
+**One-time setup** (needs a Python that OpenVINO ships wheels for; 3.14 works):
+
+```powershell
+.\tools\transcribe\setup.ps1 -DownloadModel
+```
+
+This creates a venv and downloads the model (about 1.2 GB) into the cache
+folder. Without `-DownloadModel` the model is fetched on the first
+transcription.
+
+**Output**: `<name>.md` next to the recording, same base name
+(`2026-10-19_1430_Teams.opus` -> `2026-10-19_1430_Teams.md`):
+
+```markdown
+# Transcript: 2026-10-19 14:30 · Teams
+- **Recording:** `2026-10-19_1430_Teams.opus`
+…
+**[00:01:23] Me:** Hello everyone.
+
+**[00:01:25] Others:** Hi, can you hear me?
+```
+
+An existing `.md` is never replaced unless you ask (Re-transcribe, or `--force`).
+A recording counts as transcribed when its `.md` exists.
+
+**Cache folder**: `%LOCALAPPDATA%\MeetRec` by default (not `%APPDATA%`, which
+roams). Change it in Settings, with `transcription.cache_dir`, or for a single
+run with the `MEETREC_CACHE` environment variable.
+
+```
+<cache>\venv\                      Python environment (setup.ps1)
+<cache>\models\parakeet-tdt-0.6b-v3-ov\   weights + manifest.json (checked on every run)
+<cache>\ov_cache\                  OpenVINO compiled blobs + cache_manifest.json
+<cache>\tmp\<job-id>\              per-job WAVs and progress; removed when the job ends
+```
+
+Compiled blobs are wiped automatically when the OpenVINO version or the NPU
+driver changes. Job folders left by a crash are swept after a day.
+
+**Command line** (the exe has no console of its own, so run it from a terminal):
+
+```powershell
+meetrec.exe --transcribe <file.opus> [--device auto|npu|gpu|cpu] [--force] [--bench]
+meetrec.exe --transcribe --clear-cache ov|tmp|all   # all = also the model; never the venv
+```
+
+`--bench` prints the transcript and timings instead of writing the `.md`. The
+Settings window shows the cache size and has a Clear cache button (compiled
+blobs and temp files; the model stays). To compare devices on your own machine,
+convert a clip to 16 kHz mono WAVs (the ffmpeg recipe is under Output) and run
+`<cache>\venv\Scripts\python tools\transcribe\bench.py --me me.wav --others others.wav`.
+
+**Device**: `auto` tries the NPU for every model part and falls back per part
+(GPU, then CPU for the encoder; CPU for the others) if the NPU compiler rejects
+one. Closing the Transcripts window does not stop a running job; reopen it to
+see the progress. One job runs at a time.
+
+**Model licence**: Parakeet TDT 0.6B v3 is CC-BY-4.0 (NVIDIA); the OpenVINO
+conversion is by FluidInference
+([`FluidInference/parakeet-tdt-0.6b-v3-ov`](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-ov)).
+Each transcript carries this attribution.
+
 ## Output
 
 ```
@@ -102,9 +183,16 @@ start_stop = "ctrl+alt+R"
 pause = "ctrl+alt+P"
 split = "ctrl+alt+S"
 marker = "ctrl+alt+M"
+
+[transcription]
+enabled = true                 # false disables the Transcribe buttons
+device = "auto"                # auto | npu | gpu | cpu
+cache_dir = ""                 # empty = %LOCALAPPDATA%\\MeetRec
+python_exe = ""                # empty = <cache_dir>\\venv\\Scripts\\python.exe
 ```
 
-Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).
+Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail);
+the transcription helper's own output goes to `transcribe.log` there.
 
 ## How it works
 

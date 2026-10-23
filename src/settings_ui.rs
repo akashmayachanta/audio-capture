@@ -10,6 +10,9 @@ use eframe::egui;
 use crate::audio::device::{self, DeviceInfo};
 use crate::config::{CaptureMode, Config, KNOWN_APPS};
 use crate::recordings_ui::RecordingsTab;
+use crate::transcribe::job::Device;
+use crate::transcribe::paths::{format_size, CacheDirs, ClearKind};
+use crate::transcribe::progress;
 
 /// Known apps as checkboxes, everything else as comma-separated custom names.
 pub fn split_trigger_apps(apps: &[String]) -> (Vec<(String, bool)>, String) {
@@ -88,13 +91,17 @@ struct SettingsApp {
     known: Vec<(String, bool)>,
     custom: String,
     error: Option<String>,
+    /// Size of the transcription cache, measured when the window opens and after clearing.
+    cache_bytes: u64,
+    cache_note: Option<String>,
 }
 
 impl SettingsApp {
     fn new(path: PathBuf, config: Config, mics: Vec<DeviceInfo>, speakers: Vec<DeviceInfo>, tab: Tab) -> Self {
         let (known, custom) = split_trigger_apps(&config.trigger_apps);
         let recordings = RecordingsTab::new(config.output_dir.clone());
-        Self { tab, recordings, path, config, mics, speakers, known, custom, error: None }
+        let cache_bytes = CacheDirs::from_config(&config.transcription.cache_dir).sizes().total();
+        Self { tab, recordings, path, config, mics, speakers, known, custom, error: None, cache_bytes, cache_note: None }
     }
 
     fn save(&mut self) -> bool {
@@ -216,6 +223,43 @@ impl SettingsApp {
         });
 
         ui.add_space(10.0);
+        ui.heading("Transcription");
+        ui.checkbox(&mut c.transcription.enabled, "Allow transcribing recordings (Transcripts window)");
+        ui.horizontal(|ui| {
+            ui.label("Device");
+            let current = Device::parse(&c.transcription.device);
+            egui::ComboBox::from_id_salt("transcription_device").selected_text(current.label()).show_ui(ui, |ui| {
+                for d in Device::ALL {
+                    ui.selectable_value(&mut c.transcription.device, d.as_arg().to_string(), d.label());
+                }
+            });
+        });
+        ui.label("Cache folder (models, compiled NPU blobs, temp files)");
+        ui.horizontal(|ui| {
+            let mut dir = c.transcription.cache_dir.display().to_string();
+            let hint = crate::transcribe::paths::default_root().display().to_string();
+            if ui.add(egui::TextEdit::singleline(&mut dir).hint_text(hint).desired_width(290.0)).changed() {
+                c.transcription.cache_dir = PathBuf::from(dir);
+            }
+            if ui.button("Browse…").clicked() {
+                if let Some(picked) = rfd::FileDialog::new().pick_folder() {
+                    c.transcription.cache_dir = picked;
+                }
+            }
+        });
+        let mut clear = false;
+        ui.horizontal(|ui| {
+            ui.label(format!("Cache size: {}", format_size(self.cache_bytes)));
+            clear = ui
+                .button("Clear cache")
+                .on_hover_text("Deletes compiled models and temp files; the downloaded model is kept")
+                .clicked();
+        });
+        if let Some(note) = &self.cache_note {
+            ui.label(note);
+        }
+
+        ui.add_space(10.0);
         ui.heading("Auto-record");
         ui.checkbox(&mut c.auto_record, "Record automatically when a meeting app uses the microphone");
         ui.add_enabled_ui(c.auto_record, |ui| {
@@ -255,6 +299,30 @@ impl SettingsApp {
 
         ui.add_space(10.0);
         ui.checkbox(&mut c.start_with_windows, "Start MeetRec when I sign in to Windows");
+
+        if clear {
+            self.clear_cache();
+        }
+    }
+
+    /// The cache the saved settings point at (editing the folder takes effect on Save).
+    fn cache_dirs(&self) -> CacheDirs {
+        CacheDirs::from_config(&self.config.transcription.cache_dir)
+    }
+
+    /// Compiled blobs and scratch files go; the downloaded model stays.
+    fn clear_cache(&mut self) {
+        let cache = self.cache_dirs();
+        let running = progress::scan(&cache).iter().any(|(_, s)| s.phase == progress::Phase::Running);
+        self.cache_note = Some(if running {
+            "A transcription is running; try again when it has finished.".into()
+        } else {
+            match cache.clear(ClearKind::Ov).and_then(|ov| Ok(ov + cache.clear(ClearKind::Tmp)?)) {
+                Ok(freed) => format!("Freed {}.", format_size(freed)),
+                Err(e) => format!("Could not clear the cache: {e}"),
+            }
+        });
+        self.cache_bytes = cache.sizes().total();
     }
 }
 

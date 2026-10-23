@@ -14,3 +14,5 @@ pub mod power;
 pub mod playback;
 pub mod recordings;
 pub mod recordings_ui;
+pub mod transcribe;
+pub mod transcripts_ui;

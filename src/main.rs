@@ -32,10 +32,36 @@ fn main() -> Result<()> {
             let path = args.get(3).cloned().unwrap_or_else(|| "record-test.opus".into());
             record_test(secs, &path)
         }
+        Some("--transcribe") => run_transcribe(&args[2..]),
+        Some("--transcripts") => run_transcripts(),
         Some("--settings") => run_settings(Tab::Settings),
         Some("--recordings") => run_settings(Tab::Recordings),
         _ => run_tray(),
     }
+}
+
+/// Prints to the parent's console when there is one; spawned by the Transcripts
+/// window it has none, so it logs to the file instead.
+fn run_transcribe(args: &[String]) -> Result<()> {
+    let _log_guard = if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_ok() {
+        tracing_subscriber::fmt().with_env_filter("info").init();
+        None
+    } else {
+        Some(init_file_logging()?)
+    };
+    let result = meetrec::transcribe::cli::run(args);
+    if let Err(e) = &result {
+        tracing::error!("transcribe: {e:#}");
+    }
+    result
+}
+
+fn run_transcripts() -> Result<()> {
+    let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\MeetRec.Transcripts"))? };
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        return Ok(()); // a transcripts window is already open
+    }
+    meetrec::transcripts_ui::run(config::config_path())
 }
 
 fn run_settings(tab: Tab) -> Result<()> {

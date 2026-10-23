@@ -41,6 +41,13 @@ via tray menu / hotkeys. See `README.md` for user-facing docs and
   short-lived process) with a Settings tab (edits `config.toml`, the tray
   hot-reloads it) and a Recordings tab (lists and plays recordings).
 - `meetrec.exe --record-test [secs] [out.opus]` — capture spike without the tray.
+- `meetrec.exe --transcripts` — egui Transcripts window (own mutex
+  `Local\MeetRec.Transcripts`; tray entry "Transcripts…"). Each Transcribe click
+  spawns `meetrec.exe --transcribe <file.opus> --job-id <id>` as a child.
+- `meetrec.exe --transcribe <file.opus> [--device X] [--force] [--bench]` /
+  `--transcribe --clear-cache ov|tmp|all` — one transcription job (mutex
+  `Local\MeetRec.Transcribe`, one at a time); writes `<name>.md` next to the
+  recording and progress to `<cache>\tmp\<job-id>\progress.json`.
 
 ## Architecture
 
@@ -72,6 +79,14 @@ device-change events
 | `src/settings_ui.rs` | egui window: tab bar + Settings tab |
 | `src/recordings_ui.rs`, `src/recordings.rs` | Recordings tab; listing `output_dir` with sidecars |
 | `src/playback/` | `reader.rs` Ogg Opus decoder (any mapping, page index, sample-accurate seek), `mix.rs` L/R → both ears (Both / Me / Others), `player.rs` `Transport` (testable) + WASAPI render thread |
+| `src/transcribe/paths.rs` | transcription cache folder (`%LOCALAPPDATA%\MeetRec`, `MEETREC_CACHE`, config `transcription.cache_dir`): layout, sizes, clear, stale-tmp sweep |
+| `src/transcribe/audio_prep.rs` | streams a recording into per-channel 16 kHz mono WAVs (rubato 48→16 kHz, hand-written WAV header) |
+| `src/transcribe/transcript.rs` | `Segment`/`Transcript`, channel merge, Markdown, atomic `<name>.md` write |
+| `src/transcribe/job.rs` | builds/runs the Python helper (hidden window, cancel), parses its JSON lines, `Device` |
+| `src/transcribe/progress.rs` | `progress.json` protocol between `--transcribe` and the Transcripts window; pid liveness, process-tree kill |
+| `src/transcribe/cli.rs` | `--transcribe` arg parsing and the job driver |
+| `src/transcripts_ui.rs` | Transcripts window: rows, one-job-at-a-time queue, status from the filesystem + progress files |
+| `tools/transcribe/` | Python helper: `transcribe.py` (CLI, cache/model manifests), `engine.py` (OpenVINO), `pipeline.py` (pure: chunk plan, TDT decode, merge), `bench.py`, `setup.ps1`, `test_pipeline.py` / `test_cache.py` |
 | `src/autostart.rs` | HKCU `Run` key |
 | `src/power.rs` | suspend/resume notifications (closes recording before sleep) |
 
@@ -87,6 +102,26 @@ markers). Files are `.part` while recording.
 mic_device, system_device (render endpoint for loopback), output_dir, bitrate_kbps, auto_record, trigger_apps,
 release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows.
 Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more).
+`[transcription]`: enabled, device (auto|npu|gpu|cpu), cache_dir, python_exe.
+
+## Transcription (Parakeet TDT 0.6B v3 on OpenVINO, manual only)
+
+Python helper in `tools/transcribe` (venv + model live in the cache folder, set
+up by `setup.ps1`). Cache layout: `venv\`, `models\parakeet-tdt-0.6b-v3-ov\`
+(+`manifest.json`), `ov_cache\` (+`cache_manifest.json`, wiped when the OpenVINO
+version or NPU driver changes), `tmp\<job-id>\`. `config::app_dir()` ignores
+`MEETREC_CONFIG`, so scratch runs still log to the real `%APPDATA%\MeetRec\logs`.
+- Model graphs are static: 15 s windows (240000 samples), 3 s overlap, each window
+  decoded independently and merged at the middle of the overlap. Parakeet's mel
+  graph runs on CPU only.
+- Measured (155U, 6 min of channel audio): NPU all parts 25-34x real time, GPU 10x,
+  CPU 4x. Cold NPU compile ~2 min; the NPU driver keeps its own blob cache too.
+- Python tests: `<cache>\venv\Scripts\python -m unittest discover tools/transcribe`.
+- Hardware test (`cargo test --lib -- --ignored`) needs the venv + model in the
+  default cache.
+- A debug build spends about 4 s per minute of stereo audio before the helper
+  starts (opus decode + 48→16 kHz resample, unverified but likely opt-level 0).
+  The model's speed is unaffected.
 
 ## Known open issues
 

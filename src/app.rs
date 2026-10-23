@@ -192,13 +192,14 @@ impl App {
                 }
             }
             MenuCommand::Recordings => self.open_window("--recordings"),
+            MenuCommand::Transcripts => self.open_window("--transcripts"),
             MenuCommand::Settings => self.open_window("--settings"),
             MenuCommand::Quit => self.quit = true,
         }
         self.tray.sync_checks(&self.config);
     }
 
-    /// The settings/recordings window runs as its own short-lived process.
+    /// The settings/recordings/transcripts window runs as its own short-lived process.
     fn open_window(&self, arg: &str) {
         let spawned = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(arg).spawn());
         if let Err(e) = spawned {
