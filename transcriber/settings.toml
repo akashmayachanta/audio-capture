@@ -4,10 +4,12 @@
 # MeetRec's config.toml (%APPDATA%\MeetRec\config.toml, or MEETREC_CONFIG).
 recordings_dir = ""
 
-# Model selected in the page when it opens:
-#   "bark"    - Underdog Bark 3.0 (English, most accurate, ~160 MB download)
+# Model loaded at startup when none was loaded before. After that the app
+# loads the model you loaded last (Settings in the page; kept in transcriber.db
+# in the cache folder). Options:
 #   "whistle" - Cactus Whistle (en/de/fr/es/it/nl/pl, small and fast, ~17 MB)
-model = "bark"
+#   "bark"    - Underdog Bark 3.0 (English, most accurate, ~160 MB download)
+model = "whistle"
 
 # Bark runs on PyTorch: "cpu", or "cuda" with an NVIDIA GPU and a CUDA build of torch.
 device = "cpu"

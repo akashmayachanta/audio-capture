@@ -1,14 +1,17 @@
 """The two speech models behind one interface: `transcribe(samples, pieces, ...)`
-returns one text per piece and calls
-`on_piece(index)` as each one finishes (Bark batches by length, so out of order). Weights are downloaded once, at pinned revisions,
-into the cache folder."""
+returns one text per piece and calls `on_piece(index)` as each one finishes
+(Bark batches by length, so out of order). Weights are downloaded once, at
+pinned revisions, into the cache folder."""
+import logging
 import os
+import threading
 import time
 
 import numpy as np
 
 from .audio import SAMPLE_RATE
 
+log = logging.getLogger("transcriber")
 os.environ.setdefault("NEEDLE_TELEMETRY", "0")  # cactus-needle phones home unless told not to
 
 
@@ -23,6 +26,7 @@ def _download(repo, revision, filename, dest):
 
 class BarkEngine:
     """Underdog Bark 3.0: Parakeet TDT 0.6B v3 fine-tune, English, PyTorch."""
+    id = "bark"
     name = "underdog-bark-3.0"
     credit = ("Underdog Bark 3.0 by Conway Research (CC-BY-4.0), "
               "fine-tuned from NVIDIA Parakeet TDT 0.6B v3")
@@ -64,6 +68,7 @@ class BarkEngine:
 
 class WhistleEngine:
     """Cactus Whistle: 17 MB, 7 languages, native CPU engine (cactus-needle)."""
+    id = "whistle"
     name = "cactus-whistle"
     credit = "Cactus Whistle by Cactus Compute (Apache-2.0)"
     REPO = "Cactus-Compute/whistle"
@@ -89,23 +94,73 @@ class WhistleEngine:
         return texts
 
 
+CATALOG = [  # in display order
+    {"id": "whistle", "label": "Cactus Whistle",
+     "description": "English, German, French, Spanish, Italian, Dutch, Polish. Fast and small (17 MB), less accurate."},
+    {"id": "bark", "label": "Underdog Bark 3.0",
+     "description": "English. Most accurate. 163 MB download, PyTorch; about a minute to load."},
+]
+
+
 class EngineCache:
-    """Keeps the last loaded model warm between jobs (loading Bark takes a while)."""
+    """Holds the one loaded model. `load_async` loads on a background thread;
+    jobs call `get()` for the active model and wait while it is still loading.
+    Loading another model frees the previous one."""
 
-    def __init__(self, settings):
+    def __init__(self, settings, on_loaded=lambda model: None):
         self.settings = settings
+        self.on_loaded = on_loaded
+        self.lock = threading.Lock()  # one load at a time
         self.key, self.engine = None, None
+        self.active = None  # the model chosen last; jobs use it
+        self.loading = None
+        self.error = ""
+        self.load_secs = None
 
-    def get(self, model):
+    def load_async(self, model):
+        self.active, self.error = model, ""
+        threading.Thread(target=self._load_logged, args=(model,), name="load-model", daemon=True).start()
+
+    def _load_logged(self, model):
+        try:
+            self.get(model)
+        except Exception:
+            log.exception("loading %s failed", model)
+
+    def get(self, model=None):
+        model = model or self.active
+        if model is None:
+            raise RuntimeError("no model selected")
         s = self.settings
         key = (model, s.device if model == "bark" else s.language)
-        if self.key != key:
-            self.engine = None  # free the old one before loading the next
+        with self.lock:
+            if self.key == key:
+                return self.engine
+            self.engine, self.key = None, None  # free the old one before loading the next
+            self.loading, self.error = model, ""
             t0 = time.perf_counter()
-            if model == "bark":
-                self.engine = BarkEngine(s.cache_root(), s.device)
-            else:
-                self.engine = WhistleEngine(s.cache_root(), s.language)
-            self.load_secs = time.perf_counter() - t0
-            self.key = key
-        return self.engine
+            try:
+                if model == "bark":
+                    self.engine = BarkEngine(s.cache_root(), s.device)
+                else:
+                    self.engine = WhistleEngine(s.cache_root(), s.language)
+            except Exception as e:
+                if model == self.active:
+                    self.error = f"{type(e).__name__}: {e}"
+                raise
+            finally:
+                self.loading = None
+            self.key, self.load_secs = key, time.perf_counter() - t0
+            engine = self.engine
+        self.on_loaded(model)
+        return engine
+
+    def status(self):
+        return {
+            "active": self.active,
+            "loaded": self.key[0] if self.key else None,
+            "loading": self.loading,
+            "error": self.error,
+            "load_secs": self.load_secs,
+            "device": self.engine.device_label if self.engine else "",
+        }

@@ -12,7 +12,7 @@ MODELS = ("bark", "whistle")
 @dataclass
 class Settings:
     recordings_dir: str = ""
-    model: str = "bark"
+    model: str = "whistle"
     device: str = "cpu"
     language: str = "en"
     cache_dir: str = ""
@@ -37,7 +37,7 @@ def load(path=SETTINGS_FILE):
     known = {f.name for f in fields(Settings)}
     s = Settings(**{k: v for k, v in raw.items() if k in known})
     if s.model not in MODELS:
-        s.model = "bark"
+        s.model = "whistle"
     s.device = s.device.lower()
     s.language = s.language.lower()
     return s

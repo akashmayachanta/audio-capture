@@ -9,7 +9,7 @@ import webbrowser
 import uvicorn
 
 from . import settings as settings_mod
-from .server import create_app
+from .server import build
 
 
 def main():
@@ -27,7 +27,7 @@ def main():
     logging.getLogger("transcriber").info("recordings: %s | models: %s | %s", s.recordings_root(), s.cache_root(), url)
     if not args.no_browser:
         threading.Timer(1.5, webbrowser.open, [url]).start()
-    uvicorn.run(create_app(s), host=s.host, port=s.port, log_level="warning")
+    uvicorn.run(build(s), host=s.host, port=s.port, log_level="warning")
 
 
 if __name__ == "__main__":

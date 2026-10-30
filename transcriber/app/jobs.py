@@ -20,7 +20,7 @@ _ids = itertools.count(1)
 class Job:
     rec_id: str
     path: Path
-    model: str
+    model: str = ""  # set when the job starts: the model loaded then
     id: int = field(default_factory=lambda: next(_ids))
     state: str = "queued"  # queued | running | done | error | cancelled
     phase: str = "Waiting"
@@ -43,12 +43,12 @@ class Jobs:
         self.queue = queue.Queue()
         threading.Thread(target=self._worker, name="transcribe", daemon=True).start()
 
-    def submit(self, rec_id, path, model):
+    def submit(self, rec_id, path):
         with self.lock:
             for j in self.jobs:
                 if j.rec_id == rec_id and j.state in ("queued", "running"):
                     return j
-            job = Job(rec_id, path, model)
+            job = Job(rec_id, path)
             self.jobs.append(job)
             self.jobs = self.jobs[-50:]
         self.queue.put(job)
@@ -88,8 +88,11 @@ class Jobs:
 def transcribe_recording(job, engines):
     """Decode -> cut at pauses -> model -> `<name>.md`. Progress is by audio
     seconds, so a long piece moves the bar more than a short one."""
-    job.phase = f"Loading {job.model} model (first time: download + ~1 min)"
-    engine = engines.get(job.model)
+    status = engines.status()
+    if status["loaded"] != status["active"]:
+        job.phase = "Waiting for the model to load"
+    engine = engines.get()
+    job.model = engine.id
     if job.cancel.is_set():
         raise Cancelled()
 

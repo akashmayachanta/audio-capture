@@ -23,9 +23,30 @@
   header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
   header .dir { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-  header label { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
-  select, button { font: inherit; }
-  select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+  button { font: inherit; }
+  .status { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; max-width: 46ch; min-width: 0; }
+  .status span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status .dot.loading { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+  .status .dot.error { background: var(--warn); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .icon-btn { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; flex: none; }
+  .icon-btn:hover { background: var(--hover); }
+  .icon-btn svg { width: 18px; height: 18px; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; padding: 0; background: var(--panel); color: var(--text); width: min(560px, calc(100vw - 32px)); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  .dlg-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .dlg-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .dlg-body { padding: 16px 18px 18px; }
+  .dlg-body h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .model { display: flex; gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; }
+  .model.current { border-color: var(--accent); }
+  .model .info { flex: 1; min-width: 0; }
+  .model .name { font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .model .desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .model .err { color: var(--warn); font-size: 12px; margin-top: 4px; }
+  .badge { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--sel); color: var(--accent); }
+  .badge.ok { background: transparent; color: var(--me); border: 1px solid var(--me); }
+  .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
   main { flex: 1; display: grid; grid-template-columns: minmax(300px, 420px) 1fr; min-height: 0; }
   #list { border-right: 1px solid var(--line); overflow-y: auto; background: var(--panel); }
   .row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
@@ -38,7 +59,7 @@
   .progress { height: 3px; background: var(--bar); border-radius: 2px; margin-top: 4px; overflow: hidden; }
   .progress > div { height: 100%; background: var(--accent); transition: width .4s; }
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--line); }
-  .dot.done { background: var(--me); }
+  .dot.done, .dot.ready { background: var(--me); }
   button.act { flex: none; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); cursor: pointer; font-size: 13px; min-width: 96px; }
   button.act.secondary { background: transparent; color: var(--accent); }
   button.act:disabled { opacity: .5; cursor: default; }
@@ -55,6 +76,7 @@
   .seg .who.others { color: var(--others); }
   .empty { color: var(--muted); padding: 40px 0; text-align: center; }
   @media (max-width: 760px) {
+    header .dir { display: none; }
     main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
     #list { border-right: none; border-bottom: 1px solid var(--line); }
     #view { padding: 16px; }
@@ -68,8 +90,20 @@
 <header>
   <h1>MeetRec Transcripts</h1>
   <div class="dir" id="dir"></div>
-  <label>Model <select id="model"></select></label>
+  <div class="status" id="status"><span class="dot"></span><span>Starting…</span></div>
+  <button class="icon-btn" id="open-settings" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
 </header>
+<dialog id="settings" aria-labelledby="settings-title">
+  <div class="dlg-head">
+    <h2 id="settings-title">Settings</h2>
+    <button class="icon-btn" id="close-settings" title="Close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <div class="dlg-body">
+    <h3>Speech model</h3>
+    <div id="models"></div>
+    <p class="note">One model is kept in memory and transcriptions use it. The model you load is loaded again when the app starts.</p>
+  </div>
+</dialog>
 <main>
   <div id="list"><div class="empty">Loading…</div></div>
   <div id="view"><div class="empty">Select a recording.</div></div>
@@ -78,7 +112,7 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let state = { recordings: [], jobs: [] };
-let selected = null, shownMtime = null, filter = "all", modelChosen = false;
+let selected = null, shownMtime = null, filter = "all";
 
 function fmtDur(s) {
   if (s == null) return "";
@@ -107,16 +141,8 @@ async function api(path, body) {
 async function refresh() {
   try { state = await api("/api/state"); } catch (e) { $("#list").innerHTML = `<div class="empty">Server not reachable: ${esc(e.message)}</div>`; return; }
   $("#dir").textContent = state.recordings_dir;
-  const sel = $("#model");
-  if (!sel.options.length) {
-    sel.innerHTML = state.models.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
-  }
-  if (!modelChosen) {
-    let stored = null;
-    try { stored = localStorage.getItem("model"); } catch {}
-    sel.value = state.models.some((m) => m.id === stored) ? stored : state.default_model;
-    modelChosen = true;
-  }
+  renderStatus();
+  if ($("#settings").open) renderModels();
   if (selected === null || !state.recordings.some((r) => r.id === selected)) {
     // By default show the newest recording that has a transcript.
     const first = state.recordings.find((r) => r.transcribed) || state.recordings[0];
@@ -124,6 +150,36 @@ async function refresh() {
   }
   renderList();
   renderView();
+}
+
+const modelLabel = (id) => (state.models.find((m) => m.id === id) || { label: id }).label;
+// Loading, or about to be (load_async returned before the thread marked it).
+const pending = (e, id) => e.loading === id || (!e.loading && e.active === id && e.loaded !== id && !e.error);
+
+// Header pill: which model is loaded, or loading, or failed.
+function renderStatus() {
+  const e = state.engine, el = $("#status");
+  let dot = "", text, title = "";
+  if (e.loading || pending(e, e.active)) { dot = "loading"; text = `Loading ${modelLabel(e.loading || e.active)}…`; }
+  else if (e.error) { dot = "error"; text = `${modelLabel(e.active)} failed to load`; title = e.error; }
+  else if (e.loaded) { dot = "ready"; text = `${modelLabel(e.loaded)} · ${e.device}`; title = e.load_secs != null ? `Loaded in ${Math.round(e.load_secs)} s` : ""; }
+  else { text = "No model loaded"; }
+  el.innerHTML = `<span class="dot ${dot}"></span><span>${esc(text)}</span>`;
+  el.title = title;
+}
+
+function renderModels() {
+  const e = state.engine;
+  $("#models").innerHTML = state.models.map((m) => {
+    const loading = pending(e, m.id), loaded = e.loaded === m.id && !loading;
+    const failed = e.error && e.active === m.id;
+    const badge = loaded ? `<span class="badge ok">Loaded</span>` : loading ? `<span class="badge">Loading…</span>` : "";
+    return `<div class="model${loaded || loading ? " current" : ""}">
+      <div class="info"><div class="name">${esc(m.label)} ${badge}</div><div class="desc">${esc(m.description)}</div>
+        ${failed ? `<div class="err">${esc(e.error)}</div>` : ""}</div>
+      <button class="act" data-load="${esc(m.id)}" ${loaded || loading ? "disabled" : ""}>${failed ? "Retry" : loaded ? "Loaded" : "Load"}</button>
+    </div>`;
+  }).join("") || `<div class="empty">No models enabled.</div>`;
 }
 
 function renderList() {
@@ -174,7 +230,7 @@ async function renderView() {
 $("#list").addEventListener("click", async (e) => {
   const t = e.target.closest("[data-transcribe]"), c = e.target.closest("[data-cancel]");
   try {
-    if (t) { t.disabled = true; await api("/api/transcribe", { id: t.dataset.transcribe, model: $("#model").value }); }
+    if (t) { t.disabled = true; await api("/api/transcribe", { id: t.dataset.transcribe }); }
     else if (c) { c.disabled = true; await api("/api/cancel", { job_id: Number(c.dataset.cancel) }); }
     else {
       const row = e.target.closest(".row");
@@ -189,11 +245,25 @@ $("#view").addEventListener("click", (e) => {
   const b = e.target.closest("[data-filter]");
   if (b) { filter = b.dataset.filter; renderView(); }
 });
-$("#model").addEventListener("change", (e) => { try { localStorage.setItem("model", e.target.value); } catch {} });
+$("#open-settings").addEventListener("click", () => { renderModels(); $("#settings").showModal(); });
+$("#close-settings").addEventListener("click", () => $("#settings").close());
+$("#settings").addEventListener("click", async (e) => {
+  if (e.target === e.currentTarget) { e.currentTarget.close(); return; } // backdrop
+  const b = e.target.closest("[data-load]");
+  if (!b) return;
+  b.disabled = true;
+  try { state.engine = await api("/api/load", { model: b.dataset.load }); } catch (err) { alert(err.message); }
+  renderStatus(); renderModels();
+  loop();
+});
 
+let timer;
 async function loop() {
+  clearTimeout(timer);
   await refresh();
-  setTimeout(loop, state.jobs.some(active) ? 1500 : 10000);
+  const e = state.engine || {};
+  const busy = state.jobs.some(active) || e.loading || pending(e, e.active);
+  timer = setTimeout(loop, busy ? 1500 : 10000);
 }
 loop();
 </script>

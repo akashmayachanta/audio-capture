@@ -55,11 +55,20 @@ uv sync                      # once: Python 3.11, PyTorch (CPU), models' runtime
 uv run python -m app         # serves http://127.0.0.1:8765/ and opens it
 ```
 
+Or double-click `transcriber\run.bat`, which does the same (close its window to
+stop the server).
+
 The page lists the recordings in MeetRec's `output_dir`, newest first, and
 shows the newest transcript by default. Each row has a **Transcribe** /
 **Re-transcribe** button beside it (and **Cancel** while it runs); click a row
-to read its transcript, filtered to Both / Me / Others. The model is picked in
-the header. One job runs at a time; more clicks queue up.
+to read its transcript, filtered to Both / Me / Others. One job runs at a time;
+more clicks queue up.
+
+**Model**: the header shows which model is loaded (or loading, or failed). The
+gear button opens Settings, which lists both models with a **Load** button
+each. Only one model is in memory and transcriptions use it. The app loads a
+model as soon as it starts: the one you loaded last, or `model` from
+`settings.toml` the first time.
 
 The mic channel and the system channel are transcribed separately, so every
 line is labelled **Me** or **Others** without diarization. Each channel is cut
@@ -68,19 +77,21 @@ becomes one timestamped line.
 
 | Model | Languages | Download | Runtime |
 |---|---|---|---|
-| [Underdog Bark 3.0](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0) (default) | English | 163 MB | PyTorch, CPU (or CUDA) |
-| [Cactus Whistle](https://huggingface.co/Cactus-Compute/whistle) | en, de, fr, es, it, nl, pl | 17 MB | `cactus-needle` native CPU engine |
+| [Cactus Whistle](https://huggingface.co/Cactus-Compute/whistle) (default) | en, de, fr, es, it, nl, pl | 17 MB | `cactus-needle` native CPU engine |
+| [Underdog Bark 3.0](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0) | English | 163 MB | PyTorch, CPU (or CUDA) |
 
 Bark is a fine-tune of NVIDIA Parakeet TDT 0.6B v3 and the more accurate of
-the two. Weights are downloaded on the first job at pinned revisions; the first
-Bark job also unpacks the weights (about a minute), after which the model stays
-loaded while the server runs. Whistle's anonymous usage telemetry is turned off
+the two. Weights are downloaded the first time a model loads, at pinned
+revisions; loading Bark also unpacks its weights (one to two minutes on a
+laptop CPU), after which it stays loaded while the server runs. Whistle's anonymous usage telemetry is turned off
 (`NEEDLE_TELEMETRY=0`).
 
 **Settings**: `transcriber\settings.toml` (recordings folder, default model,
 Bark device, Whistle language, cache folder, port). Models are cached in
 `%LOCALAPPDATA%\MeetRec\transcriber` (plus the Whistle engine DLL in
-`~\.cache\cactus-needle`).
+`~\.cache\cactus-needle`). `transcriber.db` there (SQLite) holds the model
+list the Settings dialog shows (`models` table; set `enabled = 0` to hide one)
+and the model loaded last (`prefs`).
 
 **Output**: `<name>.md` next to the recording, same base name
 (`2026-10-19_1430_Teams.opus` -> `2026-10-19_1430_Teams.md`); Re-transcribe
@@ -94,8 +105,6 @@ replaces it. A recording counts as transcribed when its `.md` exists.
 
 **[00:01:25] Others:** Hi, can you hear me?
 ```
-
-**Tests**: `cd transcriber; uv run python -m unittest discover -s tests -t .`
 
 **Model licences**: Bark is CC-BY-4.0 (Conway Research, derived from NVIDIA
 Parakeet TDT 0.6B v3; see `transcriber\app\BARK_NOTICE`), Whistle is

@@ -20,6 +20,7 @@ via tray menu / hotkeys. See `README.md` for user-facing docs and
   `cargo test --lib -- --ignored`.
 - For live runs, point the app at a scratch config with `MEETREC_CONFIG` so the
   user's `%APPDATA%\MeetRec\config.toml` and recordings folder are not touched.
+- Don't write test cases for 'transcriber' - python app
 
 ## Build
 
@@ -55,7 +56,7 @@ device-change events
 ```
 
 | File | Role |
-|------|------|
+| ------ | ------ |
 | `src/main.rs` | arg dispatch, file logging, single-instance mutex |
 | `src/app.rs` | tray process loop: drains menu/hotkey/detector/device/power events, feeds the controller, executes actions, config hot-reload, toasts |
 | `src/controller.rs` | **pure** state machine `Idle / Armed / Recording / Paused`; auto rules (grace timer, min duration for auto sessions) |
@@ -99,19 +100,19 @@ use it with a scratch `recordings_dir`/`cache_dir` for live runs). Recordings di
 defaults to `output_dir` from MeetRec's config.toml.
 
 | File | Role |
-|------|------|
-| `app/server.py` | routes: `/`, `/api/state`, `/api/transcript?id=`, `POST /api/transcribe`, `POST /api/cancel`; Host-header check (DNS rebinding) |
+| ------ | ------ |
+| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/`, `/api/state`, `/api/transcript?id=`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`; Host-header check (DNS rebinding) |
 | `app/jobs.py` | one worker thread, queue, cancel; decode → chunk → engine → `<name>.md` |
-| `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4) and `WhistleEngine` (`cactus-needle`, telemetry off); pinned HF revisions; `EngineCache` keeps the last model loaded |
+| `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4) and `WhistleEngine` (`cactus-needle`, telemetry off); pinned HF revisions; `CATALOG`; `EngineCache` holds one model: `load_async` + `status()` for the header, jobs `get()` the active one |
+| `app/store.py` | SQLite `transcriber.db` in the cache folder: `models` (list shown in Settings, order from `CATALOG`; `enabled` hides one) and `prefs.model` (loaded last, reloaded at startup) |
 | `app/bark_loader.py` | vendored `.bark` unpacker (CC-BY-4.0, see `BARK_NOTICE`); never exec downloaded code |
 | `app/audio.py` | PyAV decode of the Ogg Opus (family 1 multistream works) → 16 kHz per speaker |
 | `app/chunking.py` | pure: energy VAD, pieces ≤ 20 s cut at pauses / quietest frame |
 | `app/markdown.py`, `app/recordings.py` | transcript format (same as before) + parse; listing/sidecars/path checks |
-| `app/static/index.html` | the page (vanilla JS, polls `/api/state`) |
+| `app/static/index.html` | the page (vanilla JS, polls `/api/state`): header model status, gear → Settings `<dialog>` with a Load button per model |
 
-- Tests: `cd transcriber; uv run python -m unittest discover -s tests -t .`
-- Measured (155U, CPU): Bark ~4x real time on speech (silence is skipped), first
-  model unpack ~1 min per server start (then kept warm); Whistle several times
+- Measured (155U, CPU): Bark ~4x real time on speech (silence is skipped), model
+  unpack 1-2 min per server start (then kept warm); Whistle several times
   faster but less accurate; Whistle `language = "auto"` mislabels short noisy
   pieces, so the default is `en`.
 - Old OpenVINO cache folders in `%LOCALAPPDATA%\MeetRec` (`venv`, `models`,

@@ -1,5 +1,6 @@
 """FastAPI app: the page, the recordings list with transcript status, the
-transcript of one recording, and starting/cancelling transcriptions."""
+transcript of one recording, loading a model and starting/cancelling
+transcriptions."""
 import logging
 from pathlib import Path
 
@@ -7,9 +8,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import markdown, recordings, settings as settings_mod
-from .engines import EngineCache
+from . import markdown, recordings
+from .engines import CATALOG, EngineCache
 from .jobs import Jobs
+from .store import Store
 
 STATIC = Path(__file__).parent / "static"
 log = logging.getLogger("transcriber")
@@ -17,6 +19,9 @@ log = logging.getLogger("transcriber")
 
 class TranscribeRequest(BaseModel):
     id: str
+
+
+class LoadRequest(BaseModel):
     model: str
 
 
@@ -24,9 +29,18 @@ class CancelRequest(BaseModel):
     job_id: int
 
 
-def create_app(settings=None, jobs=None):
-    s = settings or settings_mod.load()
-    jobs = jobs or Jobs(EngineCache(s))
+def build(settings):
+    """The real wiring: SQLite store in the cache folder, and the model loaded
+    last (or settings.toml's) starts loading right away."""
+    store = Store(settings.cache_root() / "transcriber.db", CATALOG)
+    engines = EngineCache(settings, on_loaded=lambda model: store.set_pref("model", model))
+    if model := store.startup_model(settings.model):
+        engines.load_async(model)
+    return create_app(settings, engines, store)
+
+
+def create_app(s, engines, store, jobs=None):
+    jobs = jobs or Jobs(engines)
     app = FastAPI(title="MeetRec Transcripts", docs_url=None, redoc_url=None, openapi_url=None)
     allowed_hosts = {f"{h}:{s.port}" for h in ("127.0.0.1", "localhost", s.host)} | {"testserver"}
 
@@ -46,6 +60,13 @@ def create_app(settings=None, jobs=None):
             raise HTTPException(404, "no such recording")
         return path
 
+    def models():
+        out = store.models()
+        for m in out:
+            if m["id"] == "whistle":
+                m["description"] += f" Language: {s.language} (settings.toml)."
+        return out
+
     @app.get("/")
     def index():
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
@@ -54,14 +75,18 @@ def create_app(settings=None, jobs=None):
     def state():
         return {
             "recordings_dir": str(root()),
-            "default_model": s.model,
-            "models": [
-                {"id": "bark", "label": "Underdog Bark 3.0 (English)"},
-                {"id": "whistle", "label": f"Cactus Whistle ({s.language})"},
-            ],
+            "models": models(),
+            "engine": engines.status(),
             "recordings": recordings.list_recordings(root()),
             "jobs": jobs.snapshot(),
         }
+
+    @app.post("/api/load")
+    def load(req: LoadRequest):
+        if req.model not in {m["id"] for m in store.models()}:
+            raise HTTPException(400, f"unknown model {req.model!r}")
+        engines.load_async(req.model)
+        return engines.status()
 
     @app.get("/api/transcript")
     def transcript(id: str):
@@ -74,10 +99,9 @@ def create_app(settings=None, jobs=None):
 
     @app.post("/api/transcribe")
     def transcribe(req: TranscribeRequest):
-        if req.model not in settings_mod.MODELS:
-            raise HTTPException(400, f"unknown model {req.model!r}")
-        job = jobs.submit(req.id, recording_path(req.id), req.model)
-        return job.public()
+        if engines.status()["active"] is None:
+            raise HTTPException(409, "load a model first (settings)")
+        return jobs.submit(req.id, recording_path(req.id)).public()
 
     @app.post("/api/cancel")
     def cancel(req: CancelRequest):
