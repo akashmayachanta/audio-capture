@@ -1,0 +1,22 @@
+# MeetRec transcriber settings. Restart the server after editing.
+
+# Folder with the recordings (YYYY/MM/*.opus). Empty = output_dir from
+# MeetRec's config.toml (%APPDATA%\MeetRec\config.toml, or MEETREC_CONFIG).
+recordings_dir = ""
+
+# Model selected in the page when it opens:
+#   "bark"    - Underdog Bark 3.0 (English, most accurate, ~160 MB download)
+#   "whistle" - Cactus Whistle (en/de/fr/es/it/nl/pl, small and fast, ~17 MB)
+model = "bark"
+
+# Bark runs on PyTorch: "cpu", or "cuda" with an NVIDIA GPU and a CUDA build of torch.
+device = "cpu"
+
+# Whistle language: "auto" (detect per piece; short noisy pieces can come out as another language) or one of en, de, fr, es, it, nl, pl.
+language = "en"
+
+# Downloaded models. Empty = %LOCALAPPDATA%\MeetRec\transcriber.
+cache_dir = ""
+
+host = "127.0.0.1"
+port = 8765

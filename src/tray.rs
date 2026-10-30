@@ -84,7 +84,6 @@ pub enum MenuCommand {
     Mode(CaptureMode),
     OpenFolder,
     Recordings,
-    Transcripts,
     Settings,
     Quit,
 }
@@ -101,7 +100,6 @@ pub struct Tray {
     modes: [(CaptureMode, CheckMenuItem); 3],
     open_folder: MenuItem,
     recordings: MenuItem,
-    transcripts: MenuItem,
     settings: MenuItem,
     quit: MenuItem,
 }
@@ -121,7 +119,6 @@ impl Tray {
         let capture = Submenu::with_items("Capture", true, &[&modes[0].1, &modes[1].1, &modes[2].1])?;
         let open_folder = MenuItem::new("Open recordings folder", true, None);
         let recordings = MenuItem::new("Recordings…", true, None);
-        let transcripts = MenuItem::new("Transcripts…", true, None);
         let settings = MenuItem::new("Settings…", true, None);
         let quit = MenuItem::new("Quit", true, None);
         let menu = Menu::with_items(&[
@@ -135,7 +132,6 @@ impl Tray {
             &PredefinedMenuItem::separator(),
             &open_folder,
             &recordings,
-            &transcripts,
             &settings,
             &PredefinedMenuItem::separator(),
             &quit,
@@ -157,7 +153,6 @@ impl Tray {
             modes,
             open_folder,
             recordings,
-            transcripts,
             settings,
             quit,
         })
@@ -179,8 +174,6 @@ impl Tray {
             Some(MenuCommand::OpenFolder)
         } else if is(self.recordings.id()) {
             Some(MenuCommand::Recordings)
-        } else if is(self.transcripts.id()) {
-            Some(MenuCommand::Transcripts)
         } else if is(self.settings.id()) {
             Some(MenuCommand::Settings)
         } else if is(self.quit.id()) {

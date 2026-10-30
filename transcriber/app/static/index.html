@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeetRec Transcripts</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --line: #e3e2de; --text: #1d1d1b; --muted: #6b6a66;
+    --accent: #2f5fd0; --accent-text: #ffffff; --me: #1f7a52; --others: #7a3fb8;
+    --hover: #f0efeb; --sel: #e8eefb; --warn: #b3261e; --bar: #dfe6f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --panel: #1f1f1d; --line: #33332f; --text: #ebeae6; --muted: #9a9993;
+      --accent: #6c95f0; --accent-text: #0e1220; --me: #5cc79a; --others: #c09af0;
+      --hover: #272724; --sel: #23304d; --warn: #f2867d; --bar: #2a3552;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .dir { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  header label { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  select, button { font: inherit; }
+  select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+  main { flex: 1; display: grid; grid-template-columns: minmax(300px, 420px) 1fr; min-height: 0; }
+  #list { border-right: 1px solid var(--line); overflow-y: auto; background: var(--panel); }
+  .row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .row:hover { background: var(--hover); }
+  .row.sel { background: var(--sel); }
+  .row .info { flex: 1; min-width: 0; }
+  .row .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub.err { color: var(--warn); white-space: normal; }
+  .progress { height: 3px; background: var(--bar); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .progress > div { height: 100%; background: var(--accent); transition: width .4s; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--line); }
+  .dot.done { background: var(--me); }
+  button.act { flex: none; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); cursor: pointer; font-size: 13px; min-width: 96px; }
+  button.act.secondary { background: transparent; color: var(--accent); }
+  button.act:disabled { opacity: .5; cursor: default; }
+  #view { overflow-y: auto; padding: 20px 28px 40px; min-width: 0; }
+  #view h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+  .meta { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .filters { display: flex; gap: 6px; margin-bottom: 14px; }
+  .filters button { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; }
+  .filters button.on { border-color: var(--accent); color: var(--accent); }
+  .seg { display: grid; grid-template-columns: 64px 64px 1fr; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .seg .t { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; padding-top: 2px; }
+  .seg .who { font-weight: 600; font-size: 12px; padding-top: 2px; }
+  .seg .who.me { color: var(--me); }
+  .seg .who.others { color: var(--others); }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
+    #list { border-right: none; border-bottom: 1px solid var(--line); }
+    #view { padding: 16px; }
+    .seg { grid-template-columns: 56px 1fr; }
+    .seg .who { grid-column: 1; }
+    .seg .txt { grid-column: 2; grid-row: 1 / span 2; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>MeetRec Transcripts</h1>
+  <div class="dir" id="dir"></div>
+  <label>Model <select id="model"></select></label>
+</header>
+<main>
+  <div id="list"><div class="empty">Loading…</div></div>
+  <div id="view"><div class="empty">Select a recording.</div></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let state = { recordings: [], jobs: [] };
+let selected = null, shownMtime = null, filter = "all", modelChosen = false;
+
+function fmtDur(s) {
+  if (s == null) return "";
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = s % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+}
+function fmtTime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = s % 60;
+  return [h, m, sec].map((v) => String(v).padStart(2, "0")).join(":");
+}
+
+// Latest job per recording.
+function jobFor(id) {
+  for (let i = state.jobs.length - 1; i >= 0; i--) if (state.jobs[i].rec_id === id) return state.jobs[i];
+  return null;
+}
+const active = (j) => j && (j.state === "queued" || j.state === "running");
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+
+async function refresh() {
+  try { state = await api("/api/state"); } catch (e) { $("#list").innerHTML = `<div class="empty">Server not reachable: ${esc(e.message)}</div>`; return; }
+  $("#dir").textContent = state.recordings_dir;
+  const sel = $("#model");
+  if (!sel.options.length) {
+    sel.innerHTML = state.models.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
+  }
+  if (!modelChosen) {
+    let stored = null;
+    try { stored = localStorage.getItem("model"); } catch {}
+    sel.value = state.models.some((m) => m.id === stored) ? stored : state.default_model;
+    modelChosen = true;
+  }
+  if (selected === null || !state.recordings.some((r) => r.id === selected)) {
+    // By default show the newest recording that has a transcript.
+    const first = state.recordings.find((r) => r.transcribed) || state.recordings[0];
+    selected = first ? first.id : null;
+  }
+  renderList();
+  renderView();
+}
+
+function renderList() {
+  if (!state.recordings.length) { $("#list").innerHTML = `<div class="empty">No recordings yet.</div>`; return; }
+  $("#list").innerHTML = state.recordings.map((r) => {
+    const j = jobFor(r.id);
+    let sub = [r.app, fmtDur(r.duration_secs)].filter(Boolean).join(" · ");
+    let extra = "", btn;
+    if (active(j)) {
+      sub = j.state === "queued" ? "Queued" : `${j.phase}${j.progress > 0 ? ` · ${Math.round(j.progress * 100)}%` : ""}`;
+      extra = j.state === "running" ? `<div class="progress"><div style="width:${Math.round(j.progress * 100)}%"></div></div>` : "";
+      btn = `<button class="act secondary" data-cancel="${j.id}">Cancel</button>`;
+    } else {
+      btn = `<button class="act${r.transcribed ? " secondary" : ""}" data-transcribe="${esc(r.id)}">${r.transcribed ? "Re-transcribe" : "Transcribe"}</button>`;
+    }
+    const err = j && j.state === "error" ? `<div class="sub err">${esc(j.error)}</div>` : "";
+    return `<div class="row${r.id === selected ? " sel" : ""}" data-id="${esc(r.id)}">
+      <span class="dot${r.transcribed ? " done" : ""}" title="${r.transcribed ? "Transcribed" : "Not transcribed"}"></span>
+      <div class="info"><div class="title">${esc(r.started || r.file)}</div><div class="sub">${esc(sub)}</div>${err}${extra}</div>
+      ${btn}</div>`;
+  }).join("");
+}
+
+async function renderView() {
+  const r = state.recordings.find((x) => x.id === selected);
+  if (!r) { $("#view").innerHTML = `<div class="empty">Select a recording.</div>`; shownMtime = null; return; }
+  const key = r.id + "|" + r.transcript_mtime + "|" + filter;
+  if (shownMtime === key) return;
+  shownMtime = key;
+  if (!r.transcribed) {
+    const j = jobFor(r.id);
+    $("#view").innerHTML = `<h2>${esc(r.started || r.file)}</h2><div class="meta">${esc([r.app, fmtDur(r.duration_secs), r.file].filter(Boolean).join(" · "))}</div>
+      <div class="empty">${active(j) ? "Transcribing… the transcript appears here when it is done." : "Not transcribed yet. Use the Transcribe button beside it."}</div>`;
+    shownMtime = null; // re-render when the job state changes
+    return;
+  }
+  let t;
+  try { t = await api("/api/transcript?id=" + encodeURIComponent(r.id)); } catch (e) { $("#view").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (selected !== r.id) return;
+  const f = t.fields;
+  const meta = [f["Duration"] && `Duration ${f["Duration"]}`, f["Transcribed with"]].filter(Boolean).join(" · ");
+  const segs = t.segments.filter((s) => filter === "all" || s.speaker === filter);
+  $("#view").innerHTML = `<h2>${esc(t.title)}</h2><div class="meta">${esc(meta)}</div>
+    <div class="filters">${[["all", "Both"], ["me", "Me"], ["others", "Others"]].map(([k, l]) => `<button data-filter="${k}" class="${filter === k ? "on" : ""}">${l}</button>`).join("")}</div>
+    ${segs.length ? segs.map((s) => `<div class="seg"><span class="t">${fmtTime(s.start)}</span><span class="who ${s.speaker}">${s.speaker === "me" ? "Me" : "Others"}</span><span class="txt">${esc(s.text)}</span></div>`).join("") : `<div class="empty">No speech detected.</div>`}`;
+}
+
+$("#list").addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-transcribe]"), c = e.target.closest("[data-cancel]");
+  try {
+    if (t) { t.disabled = true; await api("/api/transcribe", { id: t.dataset.transcribe, model: $("#model").value }); }
+    else if (c) { c.disabled = true; await api("/api/cancel", { job_id: Number(c.dataset.cancel) }); }
+    else {
+      const row = e.target.closest(".row");
+      if (!row) return;
+      selected = row.dataset.id;
+      renderList();
+    }
+  } catch (err) { alert(err.message); }
+  if (t || c) await refresh(); else renderView();
+});
+$("#view").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-filter]");
+  if (b) { filter = b.dataset.filter; renderView(); }
+});
+$("#model").addEventListener("change", (e) => { try { localStorage.setItem("model", e.target.value); } catch {} });
+
+async function loop() {
+  await refresh();
+  setTimeout(loop, state.jobs.some(active) ? 1500 : 10000);
+}
+loop();
+</script>
+</body>
+</html>

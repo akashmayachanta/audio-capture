@@ -41,13 +41,6 @@ via tray menu / hotkeys. See `README.md` for user-facing docs and
   short-lived process) with a Settings tab (edits `config.toml`, the tray
   hot-reloads it) and a Recordings tab (lists and plays recordings).
 - `meetrec.exe --record-test [secs] [out.opus]` — capture spike without the tray.
-- `meetrec.exe --transcripts` — egui Transcripts window (own mutex
-  `Local\MeetRec.Transcripts`; tray entry "Transcripts…"). Each Transcribe click
-  spawns `meetrec.exe --transcribe <file.opus> --job-id <id>` as a child.
-- `meetrec.exe --transcribe <file.opus> [--device X] [--force] [--bench]` /
-  `--transcribe --clear-cache ov|tmp|all` — one transcription job (mutex
-  `Local\MeetRec.Transcribe`, one at a time); writes `<name>.md` next to the
-  recording and progress to `<cache>\tmp\<job-id>\progress.json`.
 
 ## Architecture
 
@@ -79,14 +72,6 @@ device-change events
 | `src/settings_ui.rs` | egui window: tab bar + Settings tab |
 | `src/recordings_ui.rs`, `src/recordings.rs` | Recordings tab; listing `output_dir` with sidecars |
 | `src/playback/` | `reader.rs` Ogg Opus decoder (any mapping, page index, sample-accurate seek), `mix.rs` L/R → both ears (Both / Me / Others), `player.rs` `Transport` (testable) + WASAPI render thread |
-| `src/transcribe/paths.rs` | transcription cache folder (`%LOCALAPPDATA%\MeetRec`, `MEETREC_CACHE`, config `transcription.cache_dir`): layout, sizes, clear, stale-tmp sweep |
-| `src/transcribe/audio_prep.rs` | streams a recording into per-channel 16 kHz mono WAVs (rubato 48→16 kHz, hand-written WAV header) |
-| `src/transcribe/transcript.rs` | `Segment`/`Transcript`, channel merge, Markdown, atomic `<name>.md` write |
-| `src/transcribe/job.rs` | builds/runs the Python helper (hidden window, cancel), parses its JSON lines, `Device` |
-| `src/transcribe/progress.rs` | `progress.json` protocol between `--transcribe` and the Transcripts window; pid liveness, process-tree kill |
-| `src/transcribe/cli.rs` | `--transcribe` arg parsing and the job driver |
-| `src/transcripts_ui.rs` | Transcripts window: rows, one-job-at-a-time queue, status from the filesystem + progress files |
-| `tools/transcribe/` | Python helper: `transcribe.py` (CLI, cache/model manifests), `engine.py` (OpenVINO), `pipeline.py` (pure: chunk plan, TDT decode, merge), `bench.py`, `setup.ps1`, `test_pipeline.py` / `test_cache.py` |
 | `src/autostart.rs` | HKCU `Run` key |
 | `src/power.rs` | suspend/resume notifications (closes recording before sleep) |
 
@@ -101,27 +86,36 @@ markers). Files are `.part` while recording.
 `%APPDATA%\MeetRec\config.toml` (override with `MEETREC_CONFIG`): capture_mode,
 mic_device, system_device (render endpoint for loopback), output_dir, bitrate_kbps, auto_record, trigger_apps,
 release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows.
-Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more).
-`[transcription]`: enabled, device (auto|npu|gpu|cpu), cache_dir, python_exe.
+Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more). A leftover
+`[transcription]` section from older builds is ignored.
 
-## Transcription (Parakeet TDT 0.6B v3 on OpenVINO, manual only)
+## Transcription (`transcriber/`, Python, separate from the exe)
 
-Python helper in `tools/transcribe` (venv + model live in the cache folder, set
-up by `setup.ps1`). Cache layout: `venv\`, `models\parakeet-tdt-0.6b-v3-ov\`
-(+`manifest.json`), `ov_cache\` (+`cache_manifest.json`, wiped when the OpenVINO
-version or NPU driver changes), `tmp\<job-id>\`. `config::app_dir()` ignores
-`MEETREC_CONFIG`, so scratch runs still log to the real `%APPDATA%\MeetRec\logs`.
-- Model graphs are static: 15 s windows (240000 samples), 3 s overlap, each window
-  decoded independently and merged at the middle of the overlap. Parakeet's mel
-  graph runs on CPU only.
-- Measured (155U, 6 min of channel audio): NPU all parts 25-34x real time, GPU 10x,
-  CPU 4x. Cold NPU compile ~2 min; the NPU driver keeps its own blob cache too.
-- Python tests: `<cache>\venv\Scripts\python -m unittest discover tools/transcribe`.
-- Hardware test (`cargo test --lib -- --ignored`) needs the venv + model in the
-  default cache.
-- A debug build spends about 4 s per minute of stereo audio before the helper
-  starts (opus decode + 48→16 kHz resample, unverified but likely opt-level 0).
-  The model's speed is unaffected.
+The Rust exe no longer transcribes. `transcriber/` is a uv project (Python 3.11,
+pinned deps, torch from the PyTorch CPU index) with a FastAPI page:
+`uv run python -m app` → `http://127.0.0.1:8765/`. Settings in
+`transcriber/settings.toml` (`MEETREC_TRANSCRIBER_SETTINGS` overrides the path;
+use it with a scratch `recordings_dir`/`cache_dir` for live runs). Recordings dir
+defaults to `output_dir` from MeetRec's config.toml.
+
+| File | Role |
+|------|------|
+| `app/server.py` | routes: `/`, `/api/state`, `/api/transcript?id=`, `POST /api/transcribe`, `POST /api/cancel`; Host-header check (DNS rebinding) |
+| `app/jobs.py` | one worker thread, queue, cancel; decode → chunk → engine → `<name>.md` |
+| `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4) and `WhistleEngine` (`cactus-needle`, telemetry off); pinned HF revisions; `EngineCache` keeps the last model loaded |
+| `app/bark_loader.py` | vendored `.bark` unpacker (CC-BY-4.0, see `BARK_NOTICE`); never exec downloaded code |
+| `app/audio.py` | PyAV decode of the Ogg Opus (family 1 multistream works) → 16 kHz per speaker |
+| `app/chunking.py` | pure: energy VAD, pieces ≤ 20 s cut at pauses / quietest frame |
+| `app/markdown.py`, `app/recordings.py` | transcript format (same as before) + parse; listing/sidecars/path checks |
+| `app/static/index.html` | the page (vanilla JS, polls `/api/state`) |
+
+- Tests: `cd transcriber; uv run python -m unittest discover -s tests -t .`
+- Measured (155U, CPU): Bark ~4x real time on speech (silence is skipped), first
+  model unpack ~1 min per server start (then kept warm); Whistle several times
+  faster but less accurate; Whistle `language = "auto"` mislabels short noisy
+  pieces, so the default is `en`.
+- Old OpenVINO cache folders in `%LOCALAPPDATA%\MeetRec` (`venv`, `models`,
+  `ov_cache`, `tmp`) are unused now.
 
 ## Known open issues
 

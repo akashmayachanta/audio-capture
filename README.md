@@ -41,37 +41,50 @@ seek bar, and volume (up to 200% for quiet mics). You can listen to **Both**
 sides mixed into both ears, **Me only** (the mic, left channel), or **Others
 only** (system audio, right channel).
 
-**Transcripts…** opens the Transcripts window (`meetrec.exe --transcripts`):
-one row per recording with a **Transcribe** button, a status badge and, once the
-transcript exists, **Open .md** / **Show in folder** / **Re-transcribe**. See
-[Transcription](#transcription).
+Transcripts live in a separate local web page; see [Transcription](#transcription).
 
 ## Transcription
 
-Manual, on-device speech-to-text. Nothing runs by itself: you press Transcribe
-in the Transcripts window (or use the CLI). The mic channel and the system
-channel are transcribed separately, so every line is labelled **Me** or
-**Others** without diarization.
-
-It runs NVIDIA's Parakeet TDT 0.6B v3 (25 European languages, punctuation and
-capitalisation included) through OpenVINO, on the Intel NPU when there is one.
-On a Core Ultra 7 155U a 3-minute stereo clip (6 minutes of channel audio) took
-about 11-14 s on the NPU, 34 s on the iGPU and 80 s on the CPU, which is roughly
-25-34x, 10x and 4x real time. The first NPU compile of the model takes a couple of
-minutes; later runs reuse the compiled blobs.
-
-**One-time setup** (needs a Python that OpenVINO ships wheels for; 3.14 works):
+Manual, on-device speech-to-text in a small Python web app (`transcriber\`,
+FastAPI, set up with [uv](https://docs.astral.sh/uv/)). It is separate from the
+recorder: `meetrec.exe` only records. Nothing is transcribed by itself.
 
 ```powershell
-.\tools\transcribe\setup.ps1 -DownloadModel
+cd transcriber
+uv sync                      # once: Python 3.11, PyTorch (CPU), models' runtimes
+uv run python -m app         # serves http://127.0.0.1:8765/ and opens it
 ```
 
-This creates a venv and downloads the model (about 1.2 GB) into the cache
-folder. Without `-DownloadModel` the model is fetched on the first
-transcription.
+The page lists the recordings in MeetRec's `output_dir`, newest first, and
+shows the newest transcript by default. Each row has a **Transcribe** /
+**Re-transcribe** button beside it (and **Cancel** while it runs); click a row
+to read its transcript, filtered to Both / Me / Others. The model is picked in
+the header. One job runs at a time; more clicks queue up.
+
+The mic channel and the system channel are transcribed separately, so every
+line is labelled **Me** or **Others** without diarization. Each channel is cut
+at pauses into pieces of at most 20 s; silence is skipped, and each piece
+becomes one timestamped line.
+
+| Model | Languages | Download | Runtime |
+|---|---|---|---|
+| [Underdog Bark 3.0](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0) (default) | English | 163 MB | PyTorch, CPU (or CUDA) |
+| [Cactus Whistle](https://huggingface.co/Cactus-Compute/whistle) | en, de, fr, es, it, nl, pl | 17 MB | `cactus-needle` native CPU engine |
+
+Bark is a fine-tune of NVIDIA Parakeet TDT 0.6B v3 and the more accurate of
+the two. Weights are downloaded on the first job at pinned revisions; the first
+Bark job also unpacks the weights (about a minute), after which the model stays
+loaded while the server runs. Whistle's anonymous usage telemetry is turned off
+(`NEEDLE_TELEMETRY=0`).
+
+**Settings**: `transcriber\settings.toml` (recordings folder, default model,
+Bark device, Whistle language, cache folder, port). Models are cached in
+`%LOCALAPPDATA%\MeetRec\transcriber` (plus the Whistle engine DLL in
+`~\.cache\cactus-needle`).
 
 **Output**: `<name>.md` next to the recording, same base name
-(`2026-10-19_1430_Teams.opus` -> `2026-10-19_1430_Teams.md`):
+(`2026-10-19_1430_Teams.opus` -> `2026-10-19_1430_Teams.md`); Re-transcribe
+replaces it. A recording counts as transcribed when its `.md` exists.
 
 ```markdown
 # Transcript: 2026-10-19 14:30 · Teams
@@ -82,45 +95,11 @@ transcription.
 **[00:01:25] Others:** Hi, can you hear me?
 ```
 
-An existing `.md` is never replaced unless you ask (Re-transcribe, or `--force`).
-A recording counts as transcribed when its `.md` exists.
+**Tests**: `cd transcriber; uv run python -m unittest discover -s tests -t .`
 
-**Cache folder**: `%LOCALAPPDATA%\MeetRec` by default (not `%APPDATA%`, which
-roams). Change it in Settings, with `transcription.cache_dir`, or for a single
-run with the `MEETREC_CACHE` environment variable.
-
-```
-<cache>\venv\                      Python environment (setup.ps1)
-<cache>\models\parakeet-tdt-0.6b-v3-ov\   weights + manifest.json (checked on every run)
-<cache>\ov_cache\                  OpenVINO compiled blobs + cache_manifest.json
-<cache>\tmp\<job-id>\              per-job WAVs and progress; removed when the job ends
-```
-
-Compiled blobs are wiped automatically when the OpenVINO version or the NPU
-driver changes. Job folders left by a crash are swept after a day.
-
-**Command line** (the exe has no console of its own, so run it from a terminal):
-
-```powershell
-meetrec.exe --transcribe <file.opus> [--device auto|npu|gpu|cpu] [--force] [--bench]
-meetrec.exe --transcribe --clear-cache ov|tmp|all   # all = also the model; never the venv
-```
-
-`--bench` prints the transcript and timings instead of writing the `.md`. The
-Settings window shows the cache size and has a Clear cache button (compiled
-blobs and temp files; the model stays). To compare devices on your own machine,
-convert a clip to 16 kHz mono WAVs (the ffmpeg recipe is under Output) and run
-`<cache>\venv\Scripts\python tools\transcribe\bench.py --me me.wav --others others.wav`.
-
-**Device**: `auto` tries the NPU for every model part and falls back per part
-(GPU, then CPU for the encoder; CPU for the others) if the NPU compiler rejects
-one. Closing the Transcripts window does not stop a running job; reopen it to
-see the progress. One job runs at a time.
-
-**Model licence**: Parakeet TDT 0.6B v3 is CC-BY-4.0 (NVIDIA); the OpenVINO
-conversion is by FluidInference
-([`FluidInference/parakeet-tdt-0.6b-v3-ov`](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-ov)).
-Each transcript carries this attribution.
+**Model licences**: Bark is CC-BY-4.0 (Conway Research, derived from NVIDIA
+Parakeet TDT 0.6B v3; see `transcriber\app\BARK_NOTICE`), Whistle is
+Apache-2.0 (Cactus Compute). Each transcript names the model it came from.
 
 ## Output
 
@@ -184,15 +163,9 @@ pause = "ctrl+alt+P"
 split = "ctrl+alt+S"
 marker = "ctrl+alt+M"
 
-[transcription]
-enabled = true                 # false disables the Transcribe buttons
-device = "auto"                # auto | npu | gpu | cpu
-cache_dir = ""                 # empty = %LOCALAPPDATA%\\MeetRec
-python_exe = ""                # empty = <cache_dir>\\venv\\Scripts\\python.exe
 ```
 
-Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail);
-the transcription helper's own output goes to `transcribe.log` there.
+Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).
 
 ## How it works
 

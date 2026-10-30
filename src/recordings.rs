@@ -59,7 +59,7 @@ pub fn list(output_dir: &Path) -> Vec<Recording> {
             let when = meta.as_ref().map(|m| m.start).unwrap_or_else(|| {
                 std::fs::metadata(&path).and_then(|m| m.modified()).map_or_else(|_| Local::now(), Into::into)
             });
-            let transcribed = crate::transcribe::transcript::md_path(&path).is_file();
+            let transcribed = path.with_extension("md").is_file();
             Recording { path, meta, when, transcribed }
         })
         .collect();

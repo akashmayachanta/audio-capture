@@ -8,7 +8,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 pub use crate::session::CaptureMode;
-use crate::transcribe::job::Device;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -17,22 +16,6 @@ pub struct Hotkeys {
     pub pause: String,
     pub split: String,
     pub marker: String,
-}
-
-/// On-device transcription (see `src/transcribe`). Run manually from the
-/// Transcripts window; nothing here starts a job by itself.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Transcription {
-    /// Off disables the Transcribe buttons.
-    pub enabled: bool,
-    /// "auto" (NPU first), "npu", "gpu" or "cpu".
-    pub device: String,
-    /// Models, compiled-model cache and scratch files; empty = `%LOCALAPPDATA%\MeetRec`
-    /// (the `MEETREC_CACHE` environment variable overrides both).
-    pub cache_dir: PathBuf,
-    /// Python with OpenVINO installed; empty = the venv in the cache folder.
-    pub python_exe: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,7 +37,6 @@ pub struct Config {
     pub min_duration_secs: u64,
     pub hotkeys: Hotkeys,
     pub start_with_windows: bool,
-    pub transcription: Transcription,
 }
 
 /// Apps the detector knows by name; also the default allow-list.
@@ -68,12 +50,6 @@ impl Default for Hotkeys {
             split: "ctrl+alt+S".into(),
             marker: "ctrl+alt+M".into(),
         }
-    }
-}
-
-impl Default for Transcription {
-    fn default() -> Self {
-        Self { enabled: true, device: Device::Auto.as_arg().into(), cache_dir: PathBuf::new(), python_exe: PathBuf::new() }
     }
 }
 
@@ -94,7 +70,6 @@ impl Default for Config {
             min_duration_secs: 30,
             hotkeys: Hotkeys::default(),
             start_with_windows: false,
-            transcription: Transcription::default(),
         }
     }
 }
@@ -139,7 +114,6 @@ impl Config {
         self.bitrate_kbps = self.bitrate_kbps.clamp(6, 128);
         self.release_grace_secs = self.release_grace_secs.clamp(1, 600);
         self.min_duration_secs = self.min_duration_secs.min(3600);
-        self.transcription.device = Device::parse(&self.transcription.device).as_arg().into();
         self
     }
 }
@@ -206,28 +180,12 @@ mod tests {
         assert_eq!(c.hotkeys.split, "ctrl+alt+S");
         assert_eq!(c.hotkeys.marker, "ctrl+alt+M");
         assert!(c.output_dir.ends_with("MeetRec"));
-        assert!(c.transcription.enabled);
-        assert_eq!(c.transcription.device, "auto");
-        assert!(c.transcription.cache_dir.as_os_str().is_empty());
-        assert!(c.transcription.python_exe.as_os_str().is_empty());
     }
 
     #[test]
-    fn transcription_section_is_optional_and_partial() {
-        let c = Config::parse("auto_record = false").unwrap();
-        assert_eq!(c.transcription, Transcription::default());
-        let c = Config::parse("[transcription]\ndevice = \"npu\"\ncache_dir = 'D:\\cache'\n").unwrap();
-        assert!(c.transcription.enabled);
-        assert_eq!(c.transcription.device, "npu");
-        assert_eq!(c.transcription.cache_dir, PathBuf::from("D:\\cache"));
-        assert!(Config::parse(&Config::default().to_toml()).unwrap().transcription.enabled);
-    }
-
-    #[test]
-    fn unknown_transcription_device_becomes_auto() {
-        let c = Config::parse("[transcription]\ndevice = \"tpu\"").unwrap();
-        assert_eq!(c.transcription.device, "auto");
-        assert_eq!(Config::parse("[transcription]\ndevice = \"CPU\"").unwrap().transcription.device, "cpu");
+    fn old_transcription_section_is_ignored() {
+        let c = Config::parse("auto_record = false\n[transcription]\ndevice = \"npu\"\n").unwrap();
+        assert!(!c.auto_record);
     }
 
     #[test]
