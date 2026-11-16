@@ -33,6 +33,7 @@ pub fn is_app_url(url: &str) -> bool {
 
 struct WindowHost {
     config_path: PathBuf,
+    transcriber: crate::transcriber::Launcher,
     /// Held while the folder dialog is open, so a second Browse doesn't open a second dialog.
     picking: Mutex<()>,
 }
@@ -66,6 +67,18 @@ impl Host for WindowHost {
             tracing::warn!("open folder: {e}");
         }
     }
+
+    fn exe_path(&self) -> PathBuf {
+        std::env::current_exe().unwrap_or_default()
+    }
+
+    fn start_transcriber(&self, dir: &Path) -> Result<(), String> {
+        self.transcriber.start(dir)
+    }
+
+    fn transcriber_status(&self) -> crate::transcriber::LaunchStatus {
+        self.transcriber.status()
+    }
 }
 
 fn webview_data_dir() -> PathBuf {
@@ -89,10 +102,12 @@ fn open(config_path: PathBuf, page: Page) -> Result<()> {
         .with_title("MeetRec")
         .with_inner_size(LogicalSize::new(1100.0, 720.0))
         .with_min_inner_size(LogicalSize::new(760.0, 520.0))
+        .with_window_icon(tao::window::Icon::from_rgba(crate::icon::render(32, [220, 40, 40]), 32, 32).ok())
         .build(&event_loop)
         .context("create window")?;
 
-    let host = Arc::new(WindowHost { config_path, picking: Mutex::new(()) });
+    let log = crate::config::app_dir().join("logs").join("transcriber.log");
+    let host = Arc::new(WindowHost { config_path, transcriber: crate::transcriber::Launcher::new(log), picking: Mutex::new(()) });
     let fragment = match page {
         Page::Recordings => "#/recordings",
         Page::Settings => "#/settings",

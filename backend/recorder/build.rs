@@ -1,14 +1,18 @@
-//! Embeds the exe icon, version info and manifest. The icon (a red "recording"
-//! disc, matching the tray) is generated here, so the repo carries no binary assets.
+//! Embeds the exe icon, version info and manifest. The icon (the MeetRec mark in
+//! red, `src/icon.rs`, as in the tray) is generated here, so the repo carries no binary assets.
 //! Also stages the Svelte app (`frontend/dist`) for `include_dir!`, or a placeholder
 //! page when it has not been built (so `cargo test` works without npm).
 
 use std::io::Write;
 use std::path::Path;
 
+#[path = "src/icon.rs"]
+mod icon;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/meetrec.manifest");
+    println!("cargo:rerun-if-changed=src/icon.rs");
     stage_frontend();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -58,24 +62,9 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// RGBA disc, anti-aliased, red on transparent.
-fn disc(size: u32) -> Vec<u8> {
-    let c = size as f32 / 2.0;
-    let r = c * 0.875;
-    let mut px = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let d = ((x as f32 + 0.5 - c).powi(2) + (y as f32 + 0.5 - c).powi(2)).sqrt();
-            let a = (r + 0.5 - d).clamp(0.0, 1.0);
-            px.extend_from_slice(&[220, 40, 40, (a * 255.0) as u8]);
-        }
-    }
-    px
-}
-
 /// ICO with one 32-bit BMP image per size.
 fn write_ico(path: &Path, sizes: &[u32]) -> std::io::Result<()> {
-    let images: Vec<Vec<u8>> = sizes.iter().map(|&s| bmp_entry(s, &disc(s))).collect();
+    let images: Vec<Vec<u8>> = sizes.iter().map(|&s| bmp_entry(s, &icon::render(s, [220, 40, 40]))).collect();
     let mut f = std::fs::File::create(path)?;
     f.write_all(&[0, 0, 1, 0])?;
     f.write_all(&(sizes.len() as u16).to_le_bytes())?;

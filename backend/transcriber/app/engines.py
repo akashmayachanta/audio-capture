@@ -66,31 +66,108 @@ class BarkEngine:
         return texts
 
 
+_worker_model = None  # the Whistle in a pool worker process
+
+
+def _whistle_worker_init(path):
+    global _worker_model
+    os.environ["NEEDLE_TELEMETRY"] = "0"
+    from needle.agent.whistle import Whistle
+    _worker_model = Whistle(weights=path)
+
+
+def _whistle_worker_run(samples, language):
+    return _worker_model.transcribe(samples, language=language).get("text", "").strip()
+
+
 class WhistleEngine:
-    """Cactus Whistle: 17 MB, 7 languages, native CPU engine (cactus-needle)."""
+    """Cactus Whistle: 17 MB, 7 languages, native CPU engine (cactus-needle).
+
+    One Whistle per process (the native engine holds one model and isn't
+    thread-safe) uses only ~2 cores, so with `workers` > 1 the pieces go to a
+    pool of processes, each with its own copy of the model. Measured on a
+    Core Ultra 7 155U: 1 process 2.1x real time, 4 processes 7.1x."""
     id = "whistle"
     name = "cactus-whistle"
     credit = "Cactus Whistle by Cactus Compute (Apache-2.0)"
     REPO = "Cactus-Compute/whistle"
     REVISION = "741118687e1f008f06d1351a402a731274789790"
 
-    def __init__(self, cache_root, language="en"):
+    def __init__(self, cache_root, language="en", workers=1):
         from needle.agent.whistle import LANGUAGES, Whistle
         if language not in ("auto",) + LANGUAGES:
             raise RuntimeError(f"language {language!r} is not one of auto, {', '.join(LANGUAGES)}")
         self.language = None if language == "auto" else language
-        path = _download(self.REPO, self.REVISION, "whistle.cact", cache_root / "models" / "whistle")
-        self.model = Whistle(weights=path)
-        self.device_label = "CPU"
+        self.path = _download(self.REPO, self.REVISION, "whistle.cact", cache_root / "models" / "whistle")
+        self.workers = max(1, workers)
+        self.model = None
+        self.pool = None
+        if self.workers == 1:
+            self.model = Whistle(weights=self.path)
+        else:
+            self._start_pool()
+        self.device_label = "CPU" if self.workers == 1 else f"CPU ({self.workers} processes)"
+
+    def _start_pool(self):
+        from concurrent.futures import ProcessPoolExecutor
+        self.pool = ProcessPoolExecutor(self.workers, initializer=_whistle_worker_init, initargs=(self.path,))
+        # Load the model in every worker now, so the first job doesn't wait for it.
+        list(self.pool.map(_whistle_worker_run, [np.zeros(SAMPLE_RATE, np.float32)] * self.workers,
+                           [self.language] * self.workers))
+
+    def close(self):
+        if self.pool is not None:
+            procs = list((self.pool._processes or {}).values())
+            self.pool.shutdown(wait=False, cancel_futures=True)
+            for p in procs:  # don't wait for a piece in progress
+                p.terminate()
+            self.pool = None
 
     def transcribe(self, samples, pieces, on_piece=lambda i: None, cancelled=lambda: False):
-        texts = []
-        for i, p in enumerate(pieces):
-            if cancelled():
-                raise Cancelled()
-            result = self.model.transcribe(samples[p.start:p.end], language=self.language)
-            texts.append(result.get("text", "").strip())
-            on_piece(i)
+        if self.model is not None:
+            texts = []
+            for i, p in enumerate(pieces):
+                if cancelled():
+                    raise Cancelled()
+                result = self.model.transcribe(samples[p.start:p.end], language=self.language)
+                texts.append(result.get("text", "").strip())
+                on_piece(i)
+            return texts
+        return self._transcribe_pool(samples, pieces, on_piece, cancelled)
+
+    def _transcribe_pool(self, samples, pieces, on_piece, cancelled):
+        from concurrent.futures import FIRST_COMPLETED, wait
+        from concurrent.futures.process import BrokenProcessPool
+        if self.pool is None:  # a worker died during an earlier job
+            self._start_pool()
+        texts = [""] * len(pieces)
+        # Submit a few ahead only, so cancelling stops quickly.
+        todo = iter(range(len(pieces)))
+        running = {}
+
+        def submit_next():
+            i = next(todo, None)
+            if i is not None:
+                p = pieces[i]
+                running[self.pool.submit(_whistle_worker_run, samples[p.start:p.end], self.language)] = i
+
+        try:
+            for _ in range(self.workers * 2):
+                submit_next()
+            while running:
+                done, _ = wait(running, timeout=0.5, return_when=FIRST_COMPLETED)
+                if cancelled():
+                    for f in running:
+                        f.cancel()
+                    raise Cancelled()
+                for f in done:
+                    i = running.pop(f)
+                    texts[i] = f.result()
+                    on_piece(i)
+                    submit_next()
+        except BrokenProcessPool:
+            self.close()
+            raise RuntimeError("a Whistle worker process stopped; try again") from None
         return texts
 
 
@@ -132,10 +209,12 @@ class EngineCache:
         if model is None:
             raise RuntimeError("no model selected")
         s = self.settings
-        key = (model, s.device if model == "bark" else s.language)
+        key = (model, s.device if model == "bark" else (s.language, s.whistle_workers()))
         with self.lock:
             if self.key == key:
                 return self.engine
+            if close := getattr(self.engine, "close", None):
+                close()
             self.engine, self.key = None, None  # free the old one before loading the next
             self.loading, self.error = model, ""
             t0 = time.perf_counter()
@@ -143,7 +222,7 @@ class EngineCache:
                 if model == "bark":
                     self.engine = BarkEngine(s.cache_root(), s.device)
                 else:
-                    self.engine = WhistleEngine(s.cache_root(), s.language)
+                    self.engine = WhistleEngine(s.cache_root(), s.language, s.whistle_workers())
             except Exception as e:
                 if model == self.active:
                     self.error = f"{type(e).__name__}: {e}"
@@ -154,6 +233,11 @@ class EngineCache:
             engine = self.engine
         self.on_loaded(model)
         return engine
+
+    def close(self):
+        """At exit: stops Whistle's worker processes."""
+        if close := getattr(self.engine, "close", None):
+            close()
 
     def status(self):
         return {

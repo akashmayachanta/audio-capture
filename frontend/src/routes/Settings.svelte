@@ -4,6 +4,7 @@
   import Field from '../components/Field.svelte'
   import Icon from '../components/Icon.svelte'
   import Segmented from '../components/Segmented.svelte'
+  import ServiceButton from '../components/ServiceButton.svelte'
   import Toggle from '../components/Toggle.svelte'
   import { local, transcriber, type CaptureMode, type Config, type Device } from '../lib/api'
   import { joinTriggerApps, splitTriggerApps, type KnownApp } from '../lib/apps'
@@ -205,13 +206,23 @@
 
     <Card title="Transcription" description="Runs in the separate transcriber; one model is kept in memory.">
       {#snippet aside()}
-        <span class={['rounded-full px-2.5 py-0.5 text-xs font-medium', t.online ? 'bg-ok/12 text-ok' : 'bg-panel-2 text-muted']}
-          >{t.online ? 'Online' : 'Offline'}</span
-        >
+        <div class="flex items-center gap-2.5">
+          <span class={['rounded-full px-2.5 py-0.5 text-xs font-medium', t.online ? 'bg-ok/12 text-ok' : 'bg-panel-2 text-muted']}
+            >{t.online ? 'Online' : 'Offline'}</span
+          >
+          <ServiceButton {tx} small />
+        </div>
       {/snippet}
+      {#if tx.service.failure}
+        <div class="hint"><Icon name="alert" size={16} /> <span class="whitespace-pre-wrap">{tx.service.failure}</span></div>
+      {/if}
       {#if !t.online}
         <div class="hint hint-neutral">
-          <span>Start <code class="font-mono text-[11.5px]">backend\transcriber\run.bat</code> to load models and transcribe. Existing transcripts open without it.</span>
+          <span
+            >{tx.service.phase === 'starting'
+              ? 'Starting the transcriber… The first start sets up its Python environment and can take a few minutes.'
+              : 'Start the transcriber to load models and transcribe. Existing transcripts open without it. It keeps running after this window closes.'}</span
+          >
         </div>
       {/if}
       {#if modelError}

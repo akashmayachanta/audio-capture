@@ -59,14 +59,21 @@ Manual, on-device speech-to-text in an optional local API
 [uv](https://docs.astral.sh/uv/)). It has no page of its own: the MeetRec window
 is its UI. `meetrec.exe` only records, and nothing is transcribed by itself.
 
+Start and stop it with the **Start** / **Stop** button in **Settings →
+Transcription** (also on the Recordings page while it is offline). `meetrec.exe`
+runs `uv run python -m app` in the transcriber folder, hidden, logging to
+`%APPDATA%\MeetRec\logs\transcriber.log`; the server keeps running after the
+window closes. The folder is found next to the exe or in the repo
+(`backend\transcriber`); set `transcriber_dir` in `config.toml` otherwise. The
+first start installs the Python environment and can take a few minutes. By hand:
+
 ```powershell
 cd backend\transcriber
 uv sync                      # once: Python 3.11, PyTorch (CPU), models' runtimes
 uv run python -m app         # API on http://127.0.0.1:8765/
 ```
 
-Or double-click `backend\transcriber\run.bat`, which does the same (close its
-window to stop it). While it runs, the MeetRec window shows **Transcribe**
+(or `backend\transcriber\run.bat`). While it runs, the MeetRec window shows **Transcribe**
 beside each recording (**Redo** on one that has a transcript, **Cancel** while
 it runs). One job runs at a time; more clicks queue up. The transcriber must
 read the same folder MeetRec saves to; if its `recordings_dir` points
@@ -94,8 +101,15 @@ revisions; loading Bark also unpacks its weights (one to two minutes on a
 laptop CPU), after which it stays loaded while the server runs. Whistle's anonymous usage telemetry is turned off
 (`NEEDLE_TELEMETRY=0`).
 
+**Speed / cores**: one Whistle engine uses only about 2 cores, so the
+transcriber runs several Whistle processes side by side, each with its own copy
+of the 17 MB model (`workers` in `settings.toml`; 0 = auto, a third of the
+logical cores, at most 4). On a Core Ultra 7 155U a 7-minute call went from
+2.7x to 6.6x real time; 6 processes were slower than 4. Bark is already
+multi-threaded through PyTorch (one thread per physical core by default).
+
 **Settings**: `backend\transcriber\settings.toml` (recordings folder, default model,
-Bark device, Whistle language, cache folder, port). Models are cached in
+Bark device, Whistle language, Whistle worker processes, cache folder, port). Models are cached in
 `%LOCALAPPDATA%\MeetRec\transcriber` (plus the Whistle engine DLL in
 `~\.cache\cactus-needle`). `transcriber.db` there (SQLite) holds the model
 list the Settings dialog shows (`models` table; set `enabled = 0` to hide one)

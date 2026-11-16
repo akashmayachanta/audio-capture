@@ -17,6 +17,10 @@ device = "cpu"
 # Whistle language: "auto" (detect per piece; short noisy pieces can come out as another language) or one of en, de, fr, es, it, nl, pl.
 language = "en"
 
+# Whistle transcribes this many pieces at once, each in its own process (about
+# 2 cores and 100 MB each). 0 = auto: a third of the CPU's logical cores, at most 4.
+workers = 0
+
 # Downloaded models. Empty = %LOCALAPPDATA%\MeetRec\transcriber.
 cache_dir = ""
 

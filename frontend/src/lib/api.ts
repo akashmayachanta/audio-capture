@@ -2,6 +2,7 @@
 // transcriber API on localhost.
 
 import type { Job, LocalRecording } from './recordings'
+import type { Launch } from './service'
 
 export type CaptureMode = 'both' | 'mic' | 'system'
 
@@ -18,6 +19,7 @@ export type Config = {
   min_duration_secs: number
   hotkeys: { start_stop: string; pause: string; split: string; marker: string }
   start_with_windows: boolean
+  transcriber_dir: string
 }
 
 export type ConfigResponse = { config: Config; known_apps: string[] }
@@ -77,6 +79,9 @@ export const local = {
   },
   openFolder: (id?: string) => call<object>('/api/open-folder', send('POST', { id: id ?? null })),
   pickFolder: () => call<{ path: string | null }>('/api/pick-folder', send('POST', {})),
+  /** Starts `uv run python -m app` in the transcriber folder (hidden; it outlives the window). */
+  startTranscriber: () => call<{ dir: string }>('/api/transcriber/start', send('POST', {})),
+  transcriberLaunch: () => call<Launch>('/api/transcriber'),
 }
 
 export const audioUrl = (id: string) => `/api/audio?id=${encodeURIComponent(id)}`
@@ -94,5 +99,6 @@ export const transcriber = {
   state: () => call<TranscriberState>(`${TRANSCRIBER}/api/state`, { signal: AbortSignal.timeout(3000) }),
   load: (model: string) => call<Engine>(`${TRANSCRIBER}/api/load`, send('POST', { model })),
   transcribe: (id: string) => call<Job>(`${TRANSCRIBER}/api/transcribe`, send('POST', { id })),
+  shutdown: () => call<{ stopping: boolean }>(`${TRANSCRIBER}/api/shutdown`, send('POST', {})),
   cancel: (jobId: number) => call<{ cancelled: boolean }>(`${TRANSCRIBER}/api/cancel`, send('POST', { job_id: jobId })),
 }

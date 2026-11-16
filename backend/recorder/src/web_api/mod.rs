@@ -12,14 +12,20 @@ use serde_json::json;
 
 use crate::audio::device::DeviceInfo;
 use crate::config::{Config, KNOWN_APPS};
+pub use crate::transcriber::LaunchStatus;
 
-/// What the API needs from the window process (devices, dialogs, Explorer).
+/// What the API needs from the window process (devices, dialogs, Explorer,
+/// starting the transcriber).
 pub trait Host {
     fn config_path(&self) -> PathBuf;
     /// (microphones, speakers)
     fn devices(&self) -> (Vec<DeviceInfo>, Vec<DeviceInfo>);
     fn pick_folder(&self, start: &Path) -> Option<PathBuf>;
     fn open_folder(&self, dir: &Path);
+    fn exe_path(&self) -> PathBuf;
+    /// Starts `uv run python -m app` in `dir`.
+    fn start_transcriber(&self, dir: &Path) -> Result<(), String>;
+    fn transcriber_status(&self) -> LaunchStatus;
 }
 
 type Resp = Response<Vec<u8>>;
@@ -54,8 +60,28 @@ pub fn handle(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
             let picked = host.pick_folder(&output_dir(host));
             ok_json(json!({ "path": picked }))
         }),
+        "transcriber" => only(Method::GET, &|| {
+            let mut v = serde_json::to_value(host.transcriber_status()).unwrap();
+            v["dir"] = json!(transcriber_dir(host));
+            ok_json(v)
+        }),
+        "transcriber/start" => only(Method::POST, &|| match transcriber_dir(host) {
+            None => error(
+                StatusCode::NOT_FOUND,
+                "The transcriber folder was not found next to meetrec.exe. Set transcriber_dir in config.toml.",
+            ),
+            Some(dir) => match host.start_transcriber(&dir) {
+                Ok(()) => ok_json(json!({ "dir": dir })),
+                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+            },
+        }),
         _ => not_found(),
     }
+}
+
+fn transcriber_dir(host: &dyn Host) -> Option<PathBuf> {
+    let c = Config::load_or_create(&host.config_path());
+    crate::transcriber::find_dir(&c.transcriber_dir, &host.exe_path())
 }
 
 fn output_dir(host: &dyn Host) -> PathBuf {
@@ -202,12 +228,20 @@ mod tests {
         dir: tempfile::TempDir,
         opened: RefCell<Vec<PathBuf>>,
         picked: Option<PathBuf>,
+        started: RefCell<Vec<PathBuf>>,
+        start_error: Option<String>,
     }
 
     impl FakeHost {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let host = Self { dir, opened: RefCell::new(Vec::new()), picked: None };
+            let host = Self {
+                dir,
+                opened: RefCell::new(Vec::new()),
+                picked: None,
+                started: RefCell::new(Vec::new()),
+                start_error: None,
+            };
             // Never point a test at the real recordings folder.
             let mut c = Config::default();
             c.output_dir = host.out();
@@ -241,6 +275,23 @@ mod tests {
         fn open_folder(&self, dir: &Path) {
             self.opened.borrow_mut().push(dir.to_path_buf());
         }
+        fn exe_path(&self) -> PathBuf {
+            self.dir.path().join("app").join("meetrec.exe")
+        }
+        fn start_transcriber(&self, dir: &Path) -> Result<(), String> {
+            self.started.borrow_mut().push(dir.to_path_buf());
+            self.start_error.clone().map_or(Ok(()), Err)
+        }
+        fn transcriber_status(&self) -> LaunchStatus {
+            LaunchStatus { running: !self.started.borrow().is_empty(), ..Default::default() }
+        }
+    }
+
+    fn transcriber_project(host: &FakeHost) -> PathBuf {
+        let d = host.dir.path().join("app").join("transcriber");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("pyproject.toml"), "").unwrap();
+        d
     }
 
     fn req(method: &str, uri: &str, body: &str) -> http::Request<Vec<u8>> {
@@ -407,6 +458,41 @@ mod tests {
         host.picked = Some(PathBuf::from("D:/Rec"));
         let r = handle(&host, &req("POST", &format!("{BASE}/api/pick-folder"), ""));
         assert_eq!(json(&r)["path"], "D:/Rec");
+    }
+
+    #[test]
+    fn transcriber_start_runs_the_found_folder() {
+        let host = FakeHost::new();
+        let d = transcriber_project(&host);
+        let r = handle(&host, &req("POST", &format!("{BASE}/api/transcriber/start"), ""));
+        assert_eq!(r.status(), 200);
+        assert_eq!(*host.started.borrow(), vec![d.clone()]);
+        let v = json(&handle(&host, &req("GET", &format!("{BASE}/api/transcriber"), "")));
+        assert_eq!(v["dir"], d.to_string_lossy().as_ref());
+        assert_eq!(v["running"], true);
+    }
+
+    #[test]
+    fn transcriber_start_without_a_folder_is_an_error() {
+        let host = FakeHost::new();
+        let r = handle(&host, &req("POST", &format!("{BASE}/api/transcriber/start"), ""));
+        assert_eq!(r.status(), 404);
+        assert!(json(&r)["error"].as_str().unwrap().contains("transcriber_dir"));
+        assert!(host.started.borrow().is_empty());
+        let v = json(&handle(&host, &req("GET", &format!("{BASE}/api/transcriber"), "")));
+        assert!(v["dir"].is_null());
+        assert_eq!(v["running"], false);
+    }
+
+    #[test]
+    fn transcriber_start_failure_is_reported() {
+        let mut host = FakeHost::new();
+        transcriber_project(&host);
+        host.start_error = Some("uv was not found on PATH".into());
+        let r = handle(&host, &req("POST", &format!("{BASE}/api/transcriber/start"), ""));
+        assert_eq!(r.status(), 500);
+        assert_eq!(json(&r)["error"], "uv was not found on PATH");
+        assert_eq!(handle(&host, &req("GET", &format!("{BASE}/api/transcriber/start"), "")).status(), 405);
     }
 
     #[test]

@@ -18,7 +18,22 @@ def main():
     s = settings_mod.load()
     url = f"http://{s.host}:{s.port}/"
     logging.getLogger("transcriber").info("recordings: %s | models: %s | API on %s", s.recordings_root(), s.cache_root(), url)
-    uvicorn.run(build(s), host=s.host, port=s.port, log_level="warning")
+    server = None
+
+    def shutdown():
+        server.should_exit = True
+
+    app = build(s, shutdown)
+    server = uvicorn.Server(uvicorn.Config(app, host=s.host, port=s.port, log_level="warning"))
+    code = 1  # uvicorn exits via SystemExit when the port is taken
+    try:
+        server.run()
+        code = 0
+    finally:
+        app.state.engines.close()
+        # Don't wait for daemon threads (a running job, a model load).
+        logging.shutdown()
+        os._exit(code)
 
 
 if __name__ == "__main__":

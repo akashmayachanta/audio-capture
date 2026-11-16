@@ -37,6 +37,9 @@ pub struct Config {
     pub min_duration_secs: u64,
     pub hotkeys: Hotkeys,
     pub start_with_windows: bool,
+    /// The Python transcriber's folder (with `pyproject.toml`) for the window's
+    /// Start button; empty = found next to the exe or in the repo.
+    pub transcriber_dir: PathBuf,
 }
 
 /// Apps the detector knows by name; also the default allow-list.
@@ -70,6 +73,7 @@ impl Default for Config {
             min_duration_secs: 30,
             hotkeys: Hotkeys::default(),
             start_with_windows: false,
+            transcriber_dir: PathBuf::new(),
         }
     }
 }

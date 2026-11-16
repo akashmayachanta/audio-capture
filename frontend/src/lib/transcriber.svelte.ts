@@ -1,6 +1,7 @@
 // Polls the optional transcriber API. Going offline is a normal state, not an error.
 
-import { transcriber, type TranscriberState } from './api'
+import { local, transcriber, type TranscriberState } from './api'
+import { idle, phase, settle, type Launch, type ServiceState } from './service'
 
 export type { TranscriberState }
 
@@ -25,6 +26,7 @@ export function reduce(prev: TState, result: PollResult): TState {
 
 export function createTranscriber(intervalMs = 2000) {
   const s = $state<TState>(initial())
+  const service = $state<ServiceState>({ ...idle })
   let timer: ReturnType<typeof setTimeout> | undefined
   let running = false
   let warned = false
@@ -42,6 +44,9 @@ export function createTranscriber(intervalMs = 2000) {
       result = { ok: false }
     }
     Object.assign(s, reduce(s, result))
+    let launch: Launch | null = null
+    if (service.pending === 'start') launch = await local.transcriberLaunch().catch(() => null)
+    Object.assign(service, settle(service, s.online, launch, Date.now()))
   }
 
   function poll(): Promise<void> {
@@ -58,6 +63,26 @@ export function createTranscriber(intervalMs = 2000) {
   return {
     get current() {
       return s
+    },
+    /** Start/Stop of the transcriber process. */
+    get service() {
+      return { phase: phase(service, s.online), failure: service.failure }
+    },
+    async startService() {
+      Object.assign(service, { pending: 'start', since: Date.now(), failure: '' })
+      try {
+        await local.startTranscriber()
+      } catch (e) {
+        Object.assign(service, { ...idle, failure: (e as Error).message })
+        return
+      }
+      await poll()
+    },
+    async stopService() {
+      Object.assign(service, { pending: 'stop', since: Date.now(), failure: '' })
+      // The server may drop the connection as it exits; the polls tell.
+      await transcriber.shutdown().catch(() => {})
+      await poll()
     },
     poll,
     start() {

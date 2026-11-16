@@ -104,9 +104,11 @@ Paths below are under `backend/recorder/`.
 | `src/encode/opus_ogg.rs` | libopus multistream encoder (2 uncoupled mono streams, mapping family 1; mono = family 0) + Ogg writer, page flush every 1 s |
 | `src/detect/mic_usage.rs` | polls `HKCU\…\CapabilityAccessManager\ConsentStore\microphone`; in use = `LastUsedTimeStart > 0 && LastUsedTimeStop == 0`; excludes our own exe |
 | `src/tray.rs`, `src/hotkeys.rs` | tray icon/menu (`tray-icon`/`muda`), global hotkeys |
+| `src/icon.rs` | the MeetRec mark (rounded square + white wave bars), dependency-free; tray (state colours), window icon, and `build.rs` (exe icon, via `#[path]`); the header SVG in `App.svelte` copies it |
+| `src/transcriber.rs` | `find_dir` (config `transcriber_dir`, else `transcriber/` or `backend/transcriber/` up from the exe); `Launcher` spawns `uv run python -m app` hidden (log `logs/transcriber.log`), `status()` = running / exit code + log tail |
 | `src/config.rs` | `config.toml` (serde defaults, sanitizing, mtime watcher) |
 | `src/window.rs` | the window: tao event loop, wry WebView, async `meetrec` custom protocol → `web_api::handle` on a thread per request; `WindowHost` (devices on an MTA thread, rfd folder picker, Explorer); message box if WebView2 fails |
-| `src/web_api/mod.rs` | **pure** router `handle(&dyn Host, &Request) -> Response`: `GET/PUT /api/config` (sanitized save, `{config, known_apps}`), `GET /api/devices`, `GET /api/recordings` (`{output_dir, recordings}`), `GET /api/transcript?id=` (raw `.md`), `GET /api/audio?id=` (Range → 206, open-ended capped at 2 MiB, bad → 416), `POST /api/open-folder`, `POST /api/pick-folder`; other paths → assets |
+| `src/web_api/mod.rs` | **pure** router `handle(&dyn Host, &Request) -> Response`: `GET/PUT /api/config` (sanitized save, `{config, known_apps}`), `GET /api/devices`, `GET /api/recordings` (`{output_dir, recordings}`), `GET /api/transcript?id=` (raw `.md`), `GET /api/audio?id=` (Range → 206, open-ended capped at 2 MiB, bad → 416), `POST /api/open-folder`, `POST /api/pick-folder`, `GET /api/transcriber` (launch status + `dir`), `POST /api/transcriber/start`; other paths → assets |
 | `src/web_api/files.rs` | id (path relative to `output_dir`, `/`-separated) → `.opus` inside the root only; `parse_range`; `speakers` from the sidecar channel map; `RecordingJson` |
 | `src/web_api/assets.rs` | embedded `frontend/dist` (`include_dir!`), content types |
 | `src/recordings.rs` | listing `output_dir` with sidecars and `.md` presence |
@@ -123,7 +125,8 @@ markers). Files are `.part` while recording.
 
 `%APPDATA%\MeetRec\config.toml` (override with `MEETREC_CONFIG`): capture_mode,
 mic_device, system_device (render endpoint for loopback), output_dir, bitrate_kbps, auto_record, trigger_apps,
-release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows.
+release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows,
+transcriber_dir (empty = auto).
 Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more). A leftover
 `[transcription]` section from older builds is ignored.
 
@@ -140,11 +143,12 @@ status). Tokens are CSS variables in `src/app.css` (light + dark via
 | ------ | ------ |
 | `src/lib/api.ts` | `local` (same origin) and `transcriber` clients, `Config` type, `ApiError` |
 | `src/lib/transcriber.svelte.ts` | pure `reduce` (offline keeps last state; `finishedJobIds`) + `createTranscriber()`: one request at a time, next poll 2 s after the previous reply |
+| `src/lib/service.ts` | pure Start/Stop state (`settle`, `phase`): starting until the API answers or the launched process exits (failure = exit code + log tail), stopping until it goes away (15 s timeout); wired into `createTranscriber` (`service`, `startService`, `stopService`) and `components/ServiceButton.svelte` |
 | `src/lib/numbers.ts` | `clampInt` for Settings number fields (same ranges as `Config::sanitized`) |
 | `src/lib/transcript.ts` | parses the transcript `.md` (same regexes as `markdown.py`; the only reader of the format) |
 | `src/lib/{format,apps,recordings,listen}.ts` | times, day groups, trigger-app split/join, merge recordings + jobs, `sameFolder`, Listen gains |
 | `src/routes/Recordings.svelte` | list + detail; hints (offline / folder mismatch / no model); refresh on focus and when a job finishes |
-| `src/routes/Settings.svelte` | config form with Save/Discard bar when dirty; Transcription card (Load model) |
+| `src/routes/Settings.svelte` | config form with Save/Discard bar when dirty; Transcription card (Start/Stop, Load model) |
 | `src/components/Player.svelte` | `<audio>` → Web Audio splitter → per-channel gain → both ears; exports `seek()`/`play()` |
 | `src/components/TranscriptView.svelte` | Show filter, timestamp seek, playing line highlight + scroll |
 
@@ -152,7 +156,8 @@ status). Tokens are CSS variables in `src/app.css` (light + dark via
 
 The Rust exe doesn't transcribe. `backend/transcriber/` is a uv project (Python
 3.11, pinned deps, torch from the PyTorch CPU index) serving an API only (the
-window is its UI): `uv run python -m app` → `http://127.0.0.1:8765/`. Settings in
+window is its UI): `uv run python -m app` → `http://127.0.0.1:8765/`. The window's
+Start button runs that (see `src/transcriber.rs`); Stop calls `POST /api/shutdown`. Settings in
 `backend/transcriber/settings.toml` (`MEETREC_TRANSCRIBER_SETTINGS` overrides the path;
 use it with a scratch `recordings_dir`/`cache_dir` for live runs). Recordings dir
 defaults to `output_dir` from MeetRec's config.toml; the window disables
@@ -160,9 +165,9 @@ Transcribe when the two folders differ.
 
 | File | Role |
 | ------ | ------ |
-| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`; Host-header check (DNS rebinding); CORS for `http://meetrec.localhost` only |
+| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`, `POST /api/shutdown` (`__main__` sets uvicorn `should_exit`, closes the engine, `os._exit`); Host-header check (DNS rebinding); CORS for `http://meetrec.localhost` only |
 | `app/jobs.py` | one worker thread, queue, cancel; decode → chunk → engine → `<name>.md` |
-| `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4) and `WhistleEngine` (`cactus-needle`, telemetry off); pinned HF revisions; `CATALOG`; `EngineCache` holds one model: `load_async` + `status()` for the header, jobs `get()` the active one |
+| `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4) and `WhistleEngine` (`cactus-needle`, telemetry off; one model per process and ~2 cores each, so `workers` > 1 = a `ProcessPoolExecutor` of Whistles, `close()` terminates them); pinned HF revisions; `CATALOG`; `EngineCache` holds one model: `load_async` + `status()` for the header, jobs `get()` the active one |
 | `app/store.py` | SQLite `transcriber.db` in the cache folder: `models` (list shown in Settings, order from `CATALOG`; `enabled` hides one) and `prefs.model` (loaded last, reloaded at startup) |
 | `app/bark_loader.py` | vendored `.bark` unpacker (CC-BY-4.0, see `BARK_NOTICE`); never exec downloaded code |
 | `app/audio.py` | PyAV decode of the Ogg Opus (family 1 multistream works) → 16 kHz per speaker |
@@ -171,7 +176,7 @@ Transcribe when the two folders differ.
 
 - Measured (155U, CPU): Bark ~4x real time on speech (silence is skipped), model
   unpack 1-2 min per server start (then kept warm); Whistle several times
-  faster but less accurate; Whistle `language = "auto"` mislabels short noisy
+  faster but less accurate (1 process 2.1-2.7x, 4 processes 6.6-7.1x; 6 were slower than 4); Whistle `language = "auto"` mislabels short noisy
   pieces, so the default is `en`.
 - Old OpenVINO cache folders in `%LOCALAPPDATA%\MeetRec` (`venv`, `models`,
   `ov_cache`, `tmp`) are unused now.

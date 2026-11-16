@@ -15,12 +15,21 @@ class Settings:
     model: str = "whistle"
     device: str = "cpu"
     language: str = "en"
+    workers: int = 0
     cache_dir: str = ""
     host: str = "127.0.0.1"
     port: int = 8765
 
     def recordings_root(self):
         return Path(self.recordings_dir) if self.recordings_dir else meetrec_output_dir()
+
+    def whistle_workers(self):
+        """Whistle processes run side by side; each uses about 2 cores. 0 = auto:
+        a third of the logical cores, at most 4 (more than 4 got slower on a
+        15 W laptop CPU)."""
+        if self.workers > 0:
+            return min(self.workers, 16)
+        return max(1, min(4, (os.cpu_count() or 1) // 3))
 
     def cache_root(self):
         if self.cache_dir:

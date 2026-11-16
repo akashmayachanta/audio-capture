@@ -40,21 +40,9 @@ impl IconKind {
 
 pub const ICON_SIZE: u32 = 32;
 
-/// A filled disc in the state colour on a transparent square, RGBA.
+/// The MeetRec mark (`crate::icon`) in the state colour, RGBA.
 pub fn icon_rgba(kind: IconKind) -> Vec<u8> {
-    let [r, g, b] = kind.rgb();
-    let c = ICON_SIZE as f32 / 2.0;
-    let radius = c - 2.0;
-    let mut px = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
-    for y in 0..ICON_SIZE {
-        for x in 0..ICON_SIZE {
-            let d = ((x as f32 + 0.5 - c).powi(2) + (y as f32 + 0.5 - c).powi(2)).sqrt();
-            // One pixel of anti-aliasing at the edge.
-            let alpha = (radius + 0.5 - d).clamp(0.0, 1.0);
-            px.extend_from_slice(&[r, g, b, (alpha * 255.0) as u8]);
-        }
-    }
-    px
+    crate::icon::render(ICON_SIZE, kind.rgb())
 }
 
 pub fn tooltip(state: &State, elapsed: Duration) -> String {
@@ -243,14 +231,16 @@ mod tests {
     }
 
     #[test]
-    fn icon_is_a_coloured_disc_on_transparent() {
+    fn icon_is_a_white_wave_on_a_coloured_square() {
         let px = icon_rgba(IconKind::Recording);
         assert_eq!(px.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
         let at = |x: u32, y: u32| {
             let i = ((y * ICON_SIZE + x) * 4) as usize;
             [px[i], px[i + 1], px[i + 2], px[i + 3]]
         };
-        assert_eq!(at(16, 16), [220, 40, 40, 255]);
+        assert_eq!(at(16, 16), [255, 255, 255, 255], "middle bar");
+        assert_eq!(at(13, 16), [220, 40, 40, 255], "gap between bars");
+        assert_eq!(at(16, 3), [220, 40, 40, 255], "above the wave");
         assert_eq!(at(0, 0)[3], 0, "corner is transparent");
     }
 

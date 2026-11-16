@@ -1,5 +1,5 @@
 """FastAPI app, API only (the MeetRec window is the UI): recordings with
-transcript status, loading a model and starting/cancelling transcriptions.
+transcript status, loading a model and starting/cancelling transcriptions, and stopping the server.
 The window reads transcripts and audio from meetrec.exe itself."""
 import logging
 
@@ -30,19 +30,20 @@ class CancelRequest(BaseModel):
     job_id: int
 
 
-def build(settings):
+def build(settings, shutdown=lambda: None):
     """The real wiring: SQLite store in the cache folder, and the model loaded
     last (or settings.toml's) starts loading right away."""
     store = Store(settings.cache_root() / "transcriber.db", CATALOG)
     engines = EngineCache(settings, on_loaded=lambda model: store.set_pref("model", model))
     if model := store.startup_model(settings.model):
         engines.load_async(model)
-    return create_app(settings, engines, store)
+    return create_app(settings, engines, store, shutdown=shutdown)
 
 
-def create_app(s, engines, store, jobs=None):
+def create_app(s, engines, store, jobs=None, shutdown=lambda: None):
     jobs = jobs or Jobs(engines)
     app = FastAPI(title="MeetRec Transcripts", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.engines = engines
     allowed_hosts = {f"{h}:{s.port}" for h in ("127.0.0.1", "localhost", s.host)} | {"testserver"}
 
     @app.middleware("http")
@@ -98,5 +99,12 @@ def create_app(s, engines, store, jobs=None):
     @app.post("/api/cancel")
     def cancel(req: CancelRequest):
         return {"cancelled": jobs.cancel(req.job_id)}
+
+    @app.post("/api/shutdown")
+    def stop():
+        """The window's Stop button. A running transcription is abandoned."""
+        log.info("shutdown requested")
+        shutdown()
+        return {"stopping": True}
 
     return app

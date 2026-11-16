@@ -3,6 +3,7 @@
   import Icon from '../components/Icon.svelte'
   import Player from '../components/Player.svelte'
   import RecordingList from '../components/RecordingList.svelte'
+  import ServiceButton from '../components/ServiceButton.svelte'
   import TranscriptView from '../components/TranscriptView.svelte'
   import { local, transcriber } from '../lib/api'
   import { fmtDuration } from '../lib/format'
@@ -87,9 +88,13 @@
 
     <div class="flex flex-col gap-1.5 px-3 [&:not(:empty)]:pb-1.5">
       {#if !t.online}
-        <div class="hint hint-neutral">
-          <span>Transcription is offline. Start <code class="font-mono text-[11.5px]">backend\transcriber\run.bat</code> to transcribe.</span>
+        <div class="hint hint-neutral items-center">
+          <span class="flex-1">{tx.service.phase === 'starting' ? 'Starting the transcriber…' : 'Transcription is offline.'}</span>
+          <ServiceButton {tx} small />
         </div>
+        {#if tx.service.failure}
+          <div class="hint"><Icon name="alert" size={16} /> <span class="whitespace-pre-wrap">{tx.service.failure}</span></div>
+        {/if}
       {:else if folderMismatch}
         <div class="hint">
           <Icon name="alert" size={16} />
