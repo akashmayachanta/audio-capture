@@ -5,7 +5,8 @@ transcription/notes app. Mic goes on the **left** channel, system audio
 (other participants) on the **right**, so "me" vs "others" needs no diarization.
 Records automatically when an allow-listed app (Teams, Zoom, Webex, Slack,
 Chrome, Edge, Firefox, or a custom exe name) starts using the mic, and manually
-via tray menu / hotkeys. See `README.md` for user-facing docs and
+via tray menu / hotkeys. Also does **dictation**: hold (or double-tap) a key,
+speak, and the text is typed into the focused field. See `README.md` for user-facing docs and
 `docs/plans/meetrec-plan.md` for the original design.
 
 ## Instructions
@@ -91,6 +92,9 @@ tray menu / hotkeys ──────┼─▶ app loop (Win32 message pump) �
 config watcher / power / ─┘
 device-change events
 
+Raw Input keys ─▶ dictation gesture ─▶ dictation controller ─▶ capture thread ─▶ clip on disk
+                  (polled from the app loop; overlay = Win32 layered window)  └─ phrases (cut at pauses) ─▶ stream thread ─▶ POST /api/dictate per phrase ─▶ paste thread
+
 window process: WebView2 page ──meetrec:// custom protocol──▶ web_api (config, devices, recordings, audio, transcripts)
                               └──fetch 127.0.0.1:8765──────▶ transcriber API (jobs, models), optional
 ```
@@ -115,12 +119,23 @@ Paths below are under `backend/recorder/`.
 | `src/transcriber.rs` | `find_dir` (config `transcriber_dir`, else `transcriber/` or `backend/transcriber/` up from the exe); `Launcher` spawns `uv run python -m app` hidden (log `logs/transcriber.log`), `status()` = running / exit code + log tail |
 | `src/config.rs` | `config.toml` (serde defaults, sanitizing, mtime watcher) |
 | `src/window.rs` | the window: tao event loop, wry WebView, async `meetrec` custom protocol → `web_api::handle` on a thread per request; `WindowHost` (devices on an MTA thread, rfd folder picker, Explorer); message box if WebView2 fails |
-| `src/web_api/mod.rs` | **pure** router `handle(&dyn Host, &Request) -> Response`: `GET/PUT /api/config` (sanitized save, `{config, known_apps}`), `GET /api/devices`, `GET /api/recordings` (`{output_dir, recordings}`), `GET /api/transcript?id=` (raw `.md`; `DELETE` removes it, the recording stays), `DELETE /api/recording?id=` (`.opus` + sidecar + `.md`), `GET /api/audio?id=` (Range → 206, open-ended capped at 2 MiB, bad → 416), `POST /api/open-folder`, `POST /api/pick-folder`, `GET /api/transcriber` (launch status + `dir`), `POST /api/transcriber/start`; other paths → assets |
+| `src/web_api/mod.rs` | **pure** router `handle(&dyn Host, &Request) -> Response`: `GET/PUT /api/config` (sanitized save, `{config, known_apps}`), `GET /api/devices`, `GET /api/recordings` (`{output_dir, recordings}`), `GET /api/transcript?id=` (raw `.md`; `DELETE` removes it, the recording stays), `DELETE /api/recording?id=` (`.opus` + sidecar + `.md`), `GET /api/audio?id=` (Range → 206, open-ended capped at 2 MiB, bad → 416), `POST /api/open-folder`, `POST /api/pick-folder`, `GET /api/transcriber` (launch status + `dir`), `POST /api/transcriber/start`, `POST /api/detect-key` (waits 5 s for a key → `{key: {id, name}}` or `{key: null}`; Esc = null); other paths → assets |
 | `src/web_api/files.rs` | id (path relative to `output_dir`, `/`-separated) → `.opus` inside the root only; `parse_range`; `speakers` from the sidecar channel map; `RecordingJson` |
 | `src/web_api/assets.rs` | embedded `frontend/dist` (`include_dir!`), content types |
-| `src/recordings.rs` | listing `output_dir` with sidecars and `.md` presence |
+| `src/recordings.rs` | listing `output_dir` with sidecars and `.md` presence; skips the top-level `dictation/` folder (`DICTATION_DIR`, `is_dictation_root`) |
 | `src/autostart.rs` | HKCU `Run` key (path of the running tray exe) |
 | `src/power.rs` | suspend/resume notifications (closes recording before sleep) |
+| `src/dictation/mod.rs` | `Dictation`: owns everything below at runtime; `poll(now)` (called from the app loop) drains keys → gesture → controller, executes actions, returns toast texts; `apply_config` on hot-reload; auto-starts the speech service, never stops it. Streaming: `stream_worker` transcribes each phrase while the user still talks (in order, one request at a time); `paste_mode` `live` pastes each phrase as it arrives in hands-free mode only (hold-to-talk always pastes on release: the held key would corrupt Ctrl+V), `end` pastes everything at the end; if no phrase was found the whole clip is sent (`clip_worker`); one paste thread keeps the order |
+| `src/dictation/keys.rs` | **pure** `KeyId` (`RightAlt`, `F13`, `vk:0xNN`): parse / from Raw Input / display name; drops the fake AltGr Ctrl and VK 0xFF |
+| `src/dictation/gesture.rs` | **pure** hold / tap / double-tap detector (hold ≥ 300 ms, overlay after 150 ms, double-tap gap ≤ 400 ms; another key cancels) |
+| `src/dictation/controller.rs` | **pure** dictation state machine (idle / hold / toggle / transcribing) → actions |
+| `src/dictation/segmenter.rs` | **pure** phrase cutter on 20 ms frames: a phrase ends after 0.6 s of silence (0.2 s padding kept), or at 15 s at the quietest frame of the last 3 s; `flush` gives the tail; `level_of` |
+| `src/dictation/capture.rs` | `encode_clip` (a phrase → its own small Opus clip); hands phrases to an optional channel that closes when the recording ends; mic → level meter + mono Opus clip `<output_dir>/dictation/YYYY/MM/YYYY-MM-DD_HHMMSS.opus` (`.part` while writing, no sidecar) |
+| `src/dictation/client.rs` | hand-written loopback HTTP client for the transcriber (`health`, `dictate`; no chunked replies); `MEETREC_TRANSCRIBER_ADDR` overrides `127.0.0.1:8765` |
+| `src/dictation/service.rs` | `SpeechService`: launcher + health poller + stop plan; backs the tray's "Start/Stop speech service" item |
+| `src/dictation/paste.rs` | plain-text clipboard → Ctrl+V, old text restored after ~500 ms; non-text clipboard → text typed with Unicode `SendInput`; elevated target → left on the clipboard + toast; `send_menu_mask_key` (VK 0xFF) |
+| `src/dictation/overlay_scene.rs`, `overlay.rs` | **pure** rendering of a round microphone badge (96 px at 100%; listening = voice-reactive halo and ripples, starting / transcribing = a light running round the rim, error = red flash; no text) and the Win32 layered window showing it |
+| `src/dictation/rawinput.rs` | Raw Input message-only window on its own thread → `Receiver<Stamped>`; `detect_next_key` for Settings |
 
 ## Output
 
@@ -133,7 +148,9 @@ markers). Files are `.part` while recording.
 `%APPDATA%\MeetRec\config.toml` (override with `MEETREC_CONFIG`): capture_mode,
 mic_device, system_device (render endpoint for loopback), output_dir, bitrate_kbps, auto_record, trigger_apps,
 release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows,
-transcriber_dir (empty = auto).
+transcriber_dir (empty = auto), `[dictation]`: enabled (true), hold_key and
+toggle_key (`KeyId` names, default `RightAlt`; empty = off), keep_audio (true),
+max_secs (300, clamped 5–600), paste_mode (`live` (default) | `end`).
 Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more). A leftover
 `[transcription]` section from older builds is ignored.
 
@@ -152,10 +169,11 @@ status). Tokens are CSS variables in `src/app.css` (light + dark via
 | `src/lib/transcriber.svelte.ts` | pure `reduce` (offline keeps last state; `finishedJobIds`) + `createTranscriber()`: one request at a time, next poll 2 s after the previous reply |
 | `src/lib/service.ts` | pure Start/Stop state (`settle`, `phase`): starting until the API answers or the launched process exits (failure = exit code + log tail), stopping until it goes away (15 s timeout); wired into `createTranscriber` (`service`, `startService`, `stopService`) and `components/ServiceButton.svelte` |
 | `src/lib/numbers.ts` | `clampInt` for Settings number fields (same ranges as `Config::sanitized`) |
+| `src/lib/keys.ts` | dictation key choices for Settings: `COMMON_KEYS`, `keyLabel`, `keyOptions` (ids are `KeyId` names) |
 | `src/lib/transcript.ts` | parses the transcript `.md` (same regexes as `markdown.py`; the only reader of the format) |
 | `src/lib/{format,apps,recordings,listen}.ts` | times, day groups, trigger-app split/join, merge recordings + jobs, `sameFolder`, Listen gains |
 | `src/routes/Recordings.svelte` | list + detail; hints (offline / folder mismatch / no model); refresh on focus and when a job finishes |
-| `src/routes/Settings.svelte` | config form with Save/Discard bar when dirty; Transcription card (Start/Stop, Load model) |
+| `src/routes/Settings.svelte` | config form with Save/Discard bar when dirty; Dictation card (keys with Detect…, paste mode, keep audio); Transcription card (Start/Stop, Load model) |
 | `src/components/Player.svelte` | `<audio>` → Web Audio splitter → per-channel gain → both ears; exports `seek()`/`play()` |
 | `src/components/TranscriptView.svelte` | Show filter, timestamp seek, playing line highlight + scroll |
 
@@ -172,23 +190,38 @@ Transcribe when the two folders differ.
 
 | File | Role |
 | ------ | ------ |
-| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`, `POST /api/shutdown` (`__main__` sets uvicorn `should_exit`, closes the engine, `os._exit`); Host-header check (DNS rebinding); CORS for `http://meetrec.localhost` only |
+| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`, `GET /api/health`, `POST /api/dictate` (Opus clip in the body → `{text}`; 409 no model chosen, 503 loading, 500 load failed, 400 bad/empty audio, 413 too large), `POST /api/shutdown` (`__main__` sets uvicorn `should_exit`, closes the engine, `os._exit`); Host-header check (DNS rebinding); CORS for `http://meetrec.localhost` only |
 | `app/jobs.py` | one worker thread, queue, cancel; decode → chunk → engine → `<name>.md` |
-| `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4) and `WhistleEngine` (`cactus-needle`, telemetry off; one model per process and ~2 cores each, so `workers` > 1 = a `ProcessPoolExecutor` of Whistles, `close()` terminates them); pinned HF revisions; `CATALOG`; `EngineCache` holds one model: `load_async` + `status()` for the header, jobs `get()` the active one |
+| `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4; `device` `auto`/`cpu`/`gpu`/`cuda`: `gpu` = encoder on Intel graphics via OpenVINO with inputs padded to full batches and 256-frame multiples so few shapes get compiled, `auto` falls back to CPU with a log warning) and `WhistleEngine` (`cactus-needle`, telemetry off; one model per process and ~2 cores each, so `workers` > 1 = a `ProcessPoolExecutor` of Whistles, `close()` terminates them); pinned HF revisions; `CATALOG`; `EngineCache` holds one model: `load_async` + `status()` for the header, jobs `get()` the active one |
 | `app/store.py` | SQLite `transcriber.db` in the cache folder: `models` (list shown in Settings, order from `CATALOG`; `enabled` hides one) and `prefs.model` (loaded last, reloaded at startup) |
-| `app/bark_loader.py` | vendored `.bark` unpacker (CC-BY-4.0, see `BARK_NOTICE`); never exec downloaded code |
+| `app/bark_loader.py` | vendored `.bark` unpacker (CC-BY-4.0, see `BARK_NOTICE`); never exec downloaded code. `cached_state_dict` keeps the unpacked weights as `unpacked-<rev8>.safetensors` (fp16) next to `model.bark`; `load_openvino` exports the encoder once to `encoder-<rev8>.xml/.bin` and compiles it (blobs in `<cache>/ov_cache`), then replaces `model.encoder.forward`; OpenVINO telemetry module blocked; cache files written as temp + rename |
+| `app/dictation.py` | one dictation clip → text with the active engine; cuts in between a running job's pieces (engines take `turn=`) |
 | `app/audio.py` | PyAV decode of the Ogg Opus (family 1 multistream works) → 16 kHz per speaker |
 | `app/chunking.py` | pure: energy VAD, pieces ≤ 20 s cut at pauses / quietest frame |
 | `app/markdown.py`, `app/recordings.py` | transcript format (writer; `frontend/src/lib/transcript.ts` reads it); listing/sidecars/path checks |
 
-- Measured (155U, CPU): Bark ~4x real time on speech (silence is skipped), model
-  unpack 1-2 min per server start (then kept warm); Whistle several times
-  faster but less accurate (1 process 2.1-2.7x, 4 processes 6.6-7.1x; 6 were slower than 4); Whistle `language = "auto"` mislabels short noisy
+- Measured (155U): Bark 3-4x real time on speech on the CPU (silence is skipped),
+  10-13x with the encoder on the integrated GPU (2-3 words in 400 differ); the
+  encoder is 85% of the CPU time. First load 2-3 min (unpack 46 s, convert 45 s,
+  compile 55 s), later loads ~40 s, of which ~35 s is importing torch/transformers.
+  Tried without gain: thread counts, batch 8, OpenVINO on CPU (3.8x), dynamic int8
+  (no faster, 72/401 words changed). NPU not tried. Whistle is faster than CPU Bark
+  but less accurate (1 process 2.1-2.7x, 4 processes 6.6-7.1x; 6 were slower than 4); Whistle `language = "auto"` mislabels short noisy
   pieces, so the default is `en`.
-- Old OpenVINO cache folders in `%LOCALAPPDATA%\MeetRec` (`venv`, `models`,
-  `ov_cache`, `tmp`) are unused now.
+- Old OpenVINO cache folders directly in `%LOCALAPPDATA%\MeetRec` (`venv`, `models`,
+  `ov_cache`, `tmp`) are unused; the current ones are under `MeetRec\transcriber\`.
 
 ## Known open issues
+
+- **Do not run a second `meetrec.exe` tray for tests, even with `MEETREC_CONFIG`:**
+  `App::new` runs `autostart::sync`, which rewrites or deletes the real HKCU
+  `Run\MeetRec` entry whatever the scratch config says. Drive `Dictation` from an
+  `#[ignore]` test instead. Dictation's live tests (`dictation::paste`,
+  `rawinput`, `overlay`, `capture`, `service`) overwrite the clipboard and inject
+  keys; for the service use a scratch server on another port
+  (`MEETREC_TRANSCRIBER_SETTINGS` + `MEETREC_TRANSCRIBER_ADDR`).
+- Dictation: the first clip after a long idle may lose ~0.5 s (slow mic open);
+  keyboards that hide Fn from Windows cannot bind it (keyboard Raw Input only).
 
 - **libopus is compiled unoptimized** — the `cmake` crate strips `/O*` flags, so
   recording costs ~16% of one core (idle 0.2%). `CFLAGS` won't help (filtered);

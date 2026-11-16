@@ -257,7 +257,7 @@ fn write_json(path: &Path, meta: &Meta) -> Result<()> {
 
 /// Antivirus, the search indexer or OneDrive may hold a just-closed file for a
 /// moment; give them about a second before giving up.
-fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     const ATTEMPTS: u32 = 5;
     for attempt in 1.. {
         match std::fs::rename(from, to) {
@@ -275,7 +275,7 @@ fn file_name(path: &Path) -> String {
     path.file_name().unwrap_or_default().to_string_lossy().into_owned()
 }
 
-fn append_ext(path: &Path, ext: &str) -> PathBuf {
+pub(crate) fn append_ext(path: &Path, ext: &str) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(ext);
     PathBuf::from(s)
@@ -311,7 +311,7 @@ pub fn session_path(output_dir: &Path, start: DateTime<Local>, app: &str) -> Pat
 /// Finalizes every `*.opus.part` under `output_dir`; returns the recovered files.
 pub fn recover_parts(output_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut parts = Vec::new();
-    find_parts(output_dir, &mut parts);
+    find_parts(output_dir, output_dir, &mut parts);
     let mut recovered = Vec::new();
     for part in parts {
         match recover_one(&part) {
@@ -322,12 +322,14 @@ pub fn recover_parts(output_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(recovered)
 }
 
-fn find_parts(dir: &Path, out: &mut Vec<PathBuf>) {
+fn find_parts(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
-            find_parts(&p, out);
+            if !crate::recordings::is_dictation_root(root, &p) {
+                find_parts(root, &p, out);
+            }
         } else if p.to_string_lossy().ends_with(".opus.part") {
             out.push(p);
         }
@@ -578,6 +580,20 @@ mod tests {
         assert!(meta.duration_secs >= 2.0 - LOOKAHEAD && meta.duration_secs <= 3.0, "{}", meta.duration_secs);
         assert!(meta.end.is_some());
         assert!(walk(dir.path()).iter().all(|p| !p.to_string_lossy().ends_with(".part")));
+    }
+
+    #[test]
+    fn recover_parts_leaves_the_dictation_folder_alone() {
+        // A dictation in progress (or one cut short) is not a meeting to recover.
+        let dir = tempfile::tempdir().unwrap();
+        let dictation = dir.path().join("dictation");
+        let mut s = Session::open(&dictation, at(9, 0, 0), info(Trigger::Manual, None, CaptureMode::Mic)).unwrap();
+        let part = s.part_path().to_path_buf();
+        write_secs(&mut s, 2, 1);
+        drop(s);
+
+        assert!(recover_parts(dir.path()).unwrap().is_empty());
+        assert!(part.exists(), "the dictation .part must stay where it is");
     }
 
     #[test]

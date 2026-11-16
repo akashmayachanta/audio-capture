@@ -36,6 +36,8 @@ struct WindowHost {
     transcriber: crate::transcriber::Launcher,
     /// Held while the folder dialog is open, so a second Browse doesn't open a second dialog.
     picking: Mutex<()>,
+    /// Held while Detect waits for a key, so two requests don't race for the same press.
+    detecting: Mutex<()>,
 }
 
 impl Host for WindowHost {
@@ -79,6 +81,11 @@ impl Host for WindowHost {
     fn transcriber_status(&self) -> crate::transcriber::LaunchStatus {
         self.transcriber.status()
     }
+
+    fn detect_key(&self, timeout: std::time::Duration) -> Option<(String, String)> {
+        let _one_at_a_time = self.detecting.try_lock().ok()?;
+        crate::dictation::rawinput::detect_next_key(timeout).map(|(key, name)| (key.to_string(), name))
+    }
 }
 
 fn webview_data_dir() -> PathBuf {
@@ -107,7 +114,7 @@ fn open(config_path: PathBuf, page: Page) -> Result<()> {
         .context("create window")?;
 
     let log = crate::config::app_dir().join("logs").join("transcriber.log");
-    let host = Arc::new(WindowHost { config_path, transcriber: crate::transcriber::Launcher::new(log), picking: Mutex::new(()) });
+    let host = Arc::new(WindowHost { config_path, transcriber: crate::transcriber::Launcher::new(log), picking: Mutex::new(()), detecting: Mutex::new(()) });
     let fragment = match page {
         Page::Recordings => "#/recordings",
         Page::Settings => "#/settings",

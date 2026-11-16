@@ -18,6 +18,39 @@ pub struct Hotkeys {
     pub marker: String,
 }
 
+/// When a dictation's text is put into the focused field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PasteMode {
+    /// Hands-free: each phrase as soon as it is transcribed. Hold-to-talk still
+    /// pastes on release (the held key would turn the paste into a shortcut).
+    #[default]
+    Live,
+    /// Everything at once when the dictation ends.
+    End,
+}
+
+/// Dictation: hold a key to talk, or double-tap it for hands-free. Key names
+/// are `dictation::keys::KeyId` names (`RightAlt`, `F13`, ...); empty = off.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Dictation {
+    pub enabled: bool,
+    pub hold_key: String,
+    pub toggle_key: String,
+    /// Keep each dictation's audio under `<output_dir>/dictation/`.
+    pub keep_audio: bool,
+    /// Listening stops by itself after this long.
+    pub max_secs: u64,
+    pub paste_mode: PasteMode,
+}
+
+impl Default for Dictation {
+    fn default() -> Self {
+        Self { enabled: true, hold_key: "RightAlt".into(), toggle_key: "RightAlt".into(), keep_audio: true, max_secs: 300, paste_mode: PasteMode::Live }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -40,6 +73,7 @@ pub struct Config {
     /// The Python transcriber's folder (with `pyproject.toml`) for the window's
     /// Start button; empty = found next to the exe or in the repo.
     pub transcriber_dir: PathBuf,
+    pub dictation: Dictation,
 }
 
 /// Apps the detector knows by name; also the default allow-list.
@@ -74,6 +108,7 @@ impl Default for Config {
             hotkeys: Hotkeys::default(),
             start_with_windows: false,
             transcriber_dir: PathBuf::new(),
+            dictation: Dictation::default(),
         }
     }
 }
@@ -118,6 +153,7 @@ impl Config {
         self.bitrate_kbps = self.bitrate_kbps.clamp(6, 128);
         self.release_grace_secs = self.release_grace_secs.clamp(1, 600);
         self.min_duration_secs = self.min_duration_secs.min(3600);
+        self.dictation.max_secs = self.dictation.max_secs.clamp(5, 600);
         if self.output_dir.as_os_str().to_string_lossy().trim().is_empty() {
             self.output_dir = Config::default().output_dir;
         }
@@ -222,6 +258,45 @@ mod tests {
         assert_eq!(c.hotkeys.pause, "F9");
         assert_eq!(c.hotkeys.start_stop, "ctrl+alt+R");
         assert_eq!(c.release_grace_secs, 10);
+    }
+
+    #[test]
+    fn dictation_defaults() {
+        let d = Config::default().dictation;
+        assert!(d.enabled);
+        assert_eq!(d.hold_key, "RightAlt");
+        assert_eq!(d.toggle_key, "RightAlt");
+        assert!(d.keep_audio);
+        assert_eq!(d.max_secs, 300);
+        assert_eq!(d.paste_mode, PasteMode::Live);
+    }
+
+    #[test]
+    fn dictation_paste_mode_is_live_or_end() {
+        let mode = |toml: &str| Config::parse(toml).unwrap().dictation.paste_mode;
+        assert_eq!(mode("[dictation]\npaste_mode = \"end\"\n"), PasteMode::End);
+        assert_eq!(mode("[dictation]\npaste_mode = \"live\"\n"), PasteMode::Live);
+        assert_eq!(mode("[dictation]\nkeep_audio = false\n"), PasteMode::Live, "configs from before the setting");
+        assert!(Config::default().to_toml().contains("paste_mode = \"live\""));
+    }
+
+    #[test]
+    fn old_config_without_dictation_section_parses() {
+        assert_eq!(Config::parse("").unwrap().dictation, Dictation::default());
+    }
+
+    #[test]
+    fn partial_dictation_section_keeps_other_defaults() {
+        let d = Config::parse("[dictation]\nkeep_audio = false\n").unwrap().dictation;
+        assert!(!d.keep_audio);
+        assert_eq!(d.hold_key, "RightAlt");
+        assert_eq!(d.max_secs, 300);
+    }
+
+    #[test]
+    fn dictation_max_secs_is_clamped() {
+        assert_eq!(Config::parse("[dictation]\nmax_secs = 0\n").unwrap().dictation.max_secs, 5);
+        assert_eq!(Config::parse("[dictation]\nmax_secs = 99999\n").unwrap().dictation.max_secs, 600);
     }
 
     #[test]

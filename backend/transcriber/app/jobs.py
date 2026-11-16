@@ -113,7 +113,7 @@ def transcribe_recording(job, engines):
             nonlocal done
             done += pieces[i].end - pieces[i].start
             job.progress = done / total
-        texts = engine.transcribe(channels[spk], pieces, on_piece, job.cancel.is_set)
+        texts = engine.transcribe(channels[spk], pieces, on_piece, job.cancel.is_set, turn=engines.turn)
         per_channel.append([
             markdown.Segment(spk, *p.secs(audio.SAMPLE_RATE), text)
             for p, text in zip(pieces, texts) if text.strip()

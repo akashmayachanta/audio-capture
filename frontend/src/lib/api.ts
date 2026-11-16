@@ -5,6 +5,7 @@ import type { Job, LocalRecording } from './recordings'
 import type { Launch } from './service'
 
 export type CaptureMode = 'both' | 'mic' | 'system'
+export type PasteMode = 'live' | 'end'
 
 /** backend/recorder/src/config.rs `Config`. */
 export type Config = {
@@ -20,6 +21,15 @@ export type Config = {
   hotkeys: { start_stop: string; pause: string; split: string; marker: string }
   start_with_windows: boolean
   transcriber_dir: string
+  dictation: {
+    enabled: boolean
+    hold_key: string
+    toggle_key: string
+    keep_audio: boolean
+    max_secs: number
+    /** live = hands-free pastes each phrase as it is transcribed; end = everything when the dictation ends. */
+    paste_mode: PasteMode
+  }
 }
 
 export type ConfigResponse = { config: Config; known_apps: string[] }
@@ -86,6 +96,8 @@ export const local = {
   /** Starts `uv run python -m app` in the transcriber folder (hidden; it outlives the window). */
   startTranscriber: () => call<{ dir: string }>('/api/transcriber/start', send('POST', {})),
   transcriberLaunch: () => call<Launch>('/api/transcriber'),
+  /** Waits up to 5 s for a key press; null when none came (or Esc was pressed). */
+  detectKey: () => call<{ key: { id: string; name: string } | null }>('/api/detect-key', send('POST', {})),
 }
 
 export const audioUrl = (id: string) => `/api/audio?id=${encodeURIComponent(id)}`

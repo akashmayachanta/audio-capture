@@ -12,6 +12,8 @@ Formats "bark-levels-v2" and "bark-levels-v3" (v3 = v2 with LZMA on the small si
 """
 import json
 import lzma
+import os
+from pathlib import Path
 
 import numpy as np
 
@@ -84,15 +86,137 @@ def load_state_dict(path):
     return sd, json.loads(head["config"])
 
 
-def load_model(path, cache_dir, device="cpu"):
-    """-> (ParakeetForTDT in eval mode, its processor)."""
+def cached_state_dict(path, rev, encoder=True):
+    """`load_state_dict(path)`, unpacked once: the weights are kept next to
+    `path` as fp16 safetensors (the 45 s ANS decode becomes a 5 s read; fp16
+    gave word-for-word the same transcripts). `rev` names the files, so a new
+    model revision is unpacked again. `encoder=False` leaves out the encoder's
+    weights (most of the file) when they are already cached."""
+    from safetensors import safe_open
+    from safetensors.numpy import save_file
+    folder = Path(path).parent
+    weights = folder / f"unpacked-{rev[:8]}.safetensors"
+    config = folder / f"config-{rev[:8]}.json"
+    if weights.exists() and config.exists():
+        with safe_open(str(weights), "np") as f:
+            sd = {k: f.get_tensor(k) for k in f.keys() if encoder or not k.startswith("encoder.")}
+        return sd, json.loads(config.read_text())
+    sd, cfg = load_state_dict(path)
+    sd = {k: v.astype(np.float16) if v.dtype.kind == "f" else v for k, v in sd.items()}
+    tmp = weights.with_name(weights.name + ".tmp")
+    save_file(sd, str(tmp))
+    os.replace(tmp, weights)
+    tmp = config.with_name(config.name + ".tmp")
+    tmp.write_text(json.dumps(cfg))
+    os.replace(tmp, config)  # last: both files exist = the cache is complete
+    return sd, cfg
+
+
+def _pretrained(cls, cache_dir):
+    """From our cache without asking the network; downloads the first time."""
+    try:
+        return cls.from_pretrained(BASE_REPO, revision=BASE_REVISION, cache_dir=cache_dir, local_files_only=True)
+    except OSError:
+        return cls.from_pretrained(BASE_REPO, revision=BASE_REVISION, cache_dir=cache_dir)
+
+
+def build_model(sd, cfg, cache_dir, skip_encoder=False):
+    """-> (ParakeetForTDT in eval mode, its processor). With `skip_encoder` the
+    encoder's weights stay unset: something else runs that part."""
     import torch
     from transformers import AutoProcessor, GenerationConfig, ParakeetForTDT, ParakeetTDTConfig
-    sd, cfg = load_state_dict(path)
-    model = ParakeetForTDT(ParakeetTDTConfig.from_dict(cfg))
-    missing, unexpected = model.load_state_dict({k: torch.from_numpy(v).float() for k, v in sd.items()}, strict=False)
-    if unexpected or not all("num_batches_tracked" in m for m in missing):
+    from transformers.initialization import no_init_weights
+    with no_init_weights():  # every weight is loaded below; random init of 600M of them took 19 s
+        model = ParakeetForTDT(ParakeetTDTConfig.from_dict(cfg))
+    tensors = {k: torch.from_numpy(v).float() for k, v in sd.items()
+               if not (skip_encoder and k.startswith("encoder."))}
+    missing, unexpected = model.load_state_dict(tensors, strict=False)
+    if unexpected or not all("num_batches_tracked" in m or (skip_encoder and m.startswith("encoder."))
+                             for m in missing):
         raise RuntimeError(f"model.bark does not match ParakeetForTDT: missing {missing[:5]}, unexpected {unexpected[:5]}")
-    model.generation_config = GenerationConfig.from_pretrained(BASE_REPO, revision=BASE_REVISION, cache_dir=cache_dir)
-    processor = AutoProcessor.from_pretrained(BASE_REPO, revision=BASE_REVISION, cache_dir=cache_dir)
-    return model.eval().to(device=device, dtype=torch.float32), processor
+    model.generation_config = _pretrained(GenerationConfig, cache_dir)
+    return model.eval(), _pretrained(AutoProcessor, cache_dir)
+
+
+def load_model(path, cache_dir, device="cpu", rev=""):
+    """The whole model in PyTorch."""
+    import torch
+    model, processor = build_model(*cached_state_dict(path, rev), cache_dir)
+    return model.to(device=device, dtype=torch.float32), processor
+
+
+def _openvino():
+    """OpenVINO with its usage telemetry off: its converter reports to Intel
+    through `openvino_telemetry` and uses a stub when that module is missing."""
+    import sys
+    sys.modules.setdefault("openvino_telemetry", None)
+    import openvino
+    return openvino
+
+
+def openvino_gpu():
+    """Is there a GPU OpenVINO can run on (Intel graphics)?"""
+    try:
+        return "GPU" in _openvino().Core().available_devices
+    except Exception:
+        return False
+
+
+def export_encoder(model, processor, xml_path):
+    """Writes the encoder as OpenVINO IR (fp16 weights) at `xml_path`."""
+    import torch
+    openvino = _openvino()
+
+    class Encoder(torch.nn.Module):
+        def __init__(self, encoder):
+            super().__init__()
+            self.encoder = encoder
+
+        def forward(self, input_features, attention_mask):
+            out = self.encoder(input_features=input_features, attention_mask=attention_mask,
+                               output_attention_mask=True)
+            return out.last_hidden_state, out.attention_mask
+
+    # Two rows of different lengths, so batch and time are traced as dynamic.
+    waves = [np.zeros(32000, np.float32), np.zeros(16000, np.float32)]
+    example = processor(waves, sampling_rate=16000, return_tensors="pt", padding=True)
+    with torch.inference_mode():
+        ir = openvino.convert_model(Encoder(model.encoder),
+                                    example_input=(example["input_features"], example["attention_mask"]))
+    xml_path = Path(xml_path)
+    tmp = xml_path.with_name("tmp-" + xml_path.name)
+    openvino.save_model(ir, str(tmp), compress_to_fp16=True)
+    os.replace(tmp.with_suffix(".bin"), xml_path.with_suffix(".bin"))
+    os.replace(tmp, xml_path)  # last: the .xml exists = the export is complete
+
+
+def load_openvino(path, cache_root, rev, ov_device="GPU"):
+    """-> (model, processor) with the encoder (85% of the work) compiled by
+    OpenVINO for `ov_device`; decoder and joint stay in PyTorch on the CPU.
+    The first call converts the encoder (about a minute) and compiles it
+    (another); both are kept, in the model folder and `ov_cache`."""
+    import torch
+    openvino = _openvino()
+    from transformers.models.parakeet.modeling_parakeet import ParakeetEncoderModelOutput
+    xml = Path(path).parent / f"encoder-{rev[:8]}.xml"
+    exported = xml.exists()
+    sd, cfg = cached_state_dict(path, rev, encoder=not exported)
+    model, processor = build_model(sd, cfg, str(Path(cache_root) / "hf"), skip_encoder=exported)
+    del sd
+    if not exported:
+        export_encoder(model, processor, xml)
+    core = openvino.Core()
+    core.set_property({"CACHE_DIR": str(Path(cache_root) / "ov_cache")})
+    compiled = core.compile_model(core.read_model(str(xml)), ov_device, {"PERFORMANCE_HINT": "LATENCY"})
+
+    def forward(input_features=None, attention_mask=None, **_):
+        out = compiled([input_features.numpy(), attention_mask.numpy()])
+        hidden, mask = out[0], out[1]
+        return ParakeetEncoderModelOutput(last_hidden_state=torch.from_numpy(hidden.copy()),
+                                          attention_mask=torch.from_numpy(mask.copy()).int())
+
+    # Free the PyTorch encoder's weights (2.4 GB as float32); only its forward is used.
+    for p in model.encoder.parameters():
+        p.data = torch.empty(0)
+    model.encoder.forward = forward
+    return model, processor

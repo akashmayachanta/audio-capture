@@ -11,8 +11,12 @@ recordings_dir = ""
 #   "bark"    - Underdog Bark 3.0 (English, most accurate, ~160 MB download)
 model = "whistle"
 
-# Bark runs on PyTorch: "cpu", or "cuda" with an NVIDIA GPU and a CUDA build of torch.
-device = "cpu"
+# Where Bark runs:
+#   "auto" - Intel graphics (through OpenVINO) when there is one, else the CPU
+#   "cpu"  - PyTorch on the CPU
+#   "gpu"  - Intel graphics, and an error instead of the CPU if that fails
+#   "cuda" - an NVIDIA GPU; needs a CUDA build of torch
+device = "auto"
 
 # Whistle language: "auto" (detect per piece; short noisy pieces can come out as another language) or one of en, de, fr, es, it, nl, pl.
 language = "en"

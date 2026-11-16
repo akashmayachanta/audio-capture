@@ -15,6 +15,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "cactus-needle==3.2.8",
+    "openvino==2026.4.1",
 ]
 
 [tool.uv]

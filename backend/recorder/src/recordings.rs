@@ -18,10 +18,20 @@ pub struct Recording {
 }
 
 
-/// Every `*.opus` under `output_dir` (not `.part` files still being written).
+/// Where dictation clips go, directly under `output_dir`. They are not meetings:
+/// listing and crash recovery skip this folder.
+pub const DICTATION_DIR: &str = "dictation";
+
+/// True for `<output_dir>/dictation` itself.
+pub fn is_dictation_root(output_dir: &Path, dir: &Path) -> bool {
+    dir.parent() == Some(output_dir) && dir.file_name().is_some_and(|n| n == DICTATION_DIR)
+}
+
+/// Every `*.opus` under `output_dir` (not `.part` files still being written,
+/// not dictation clips).
 pub fn list(output_dir: &Path) -> Vec<Recording> {
     let mut paths = Vec::new();
-    find_opus(output_dir, &mut paths);
+    find_opus(output_dir, output_dir, &mut paths);
     let mut out: Vec<Recording> = paths
         .into_iter()
         .map(|path| {
@@ -39,12 +49,14 @@ pub fn list(output_dir: &Path) -> Vec<Recording> {
     out
 }
 
-fn find_opus(dir: &Path, out: &mut Vec<PathBuf>) {
+fn find_opus(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
-            find_opus(&p, out);
+            if !is_dictation_root(root, &p) {
+                find_opus(root, &p, out);
+            }
         } else if p.extension().is_some_and(|x| x == "opus") {
             out.push(p);
         }
@@ -104,6 +116,25 @@ mod tests {
         std::fs::write(d.join("2026/10/notes.txt"), b"hi").unwrap();
         let paths: Vec<PathBuf> = list(d).into_iter().map(|r| r.path).collect();
         assert_eq!(paths, vec![b, a, c]);
+    }
+
+    #[test]
+    fn dictation_clips_are_not_meeting_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let meeting = recording(d, "2026/10/meeting", None);
+        recording(d, "dictation/2026/10/2026-10-19_101500", None);
+        let paths: Vec<PathBuf> = list(d).into_iter().map(|r| r.path).collect();
+        assert_eq!(paths, vec![meeting]);
+    }
+
+    #[test]
+    fn only_the_top_level_dictation_folder_is_skipped() {
+        // An app called "dictation" lives under YYYY/MM, not at the root.
+        let dir = tempfile::tempdir().unwrap();
+        let nested = recording(dir.path(), "2026/10/dictation/clip", None);
+        let paths: Vec<PathBuf> = list(dir.path()).into_iter().map(|r| r.path).collect();
+        assert_eq!(paths, vec![nested]);
     }
 
     #[test]

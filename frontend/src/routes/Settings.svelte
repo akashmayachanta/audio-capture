@@ -6,9 +6,10 @@
   import Segmented from '../components/Segmented.svelte'
   import ServiceButton from '../components/ServiceButton.svelte'
   import Toggle from '../components/Toggle.svelte'
-  import { local, transcriber, type CaptureMode, type Config, type Device } from '../lib/api'
+  import { local, transcriber, type CaptureMode, type Config, type Device, type PasteMode } from '../lib/api'
   import { joinTriggerApps, splitTriggerApps, type KnownApp } from '../lib/apps'
   import { rebase } from '../lib/config'
+  import { keyOptions } from '../lib/keys'
   import { clampInt } from '../lib/numbers'
   import type { createTranscriber } from '../lib/transcriber.svelte'
 
@@ -27,6 +28,9 @@
   let justSaved = $state(false)
   let modelError = $state('')
   let picking = $state(false)
+  type DictationKey = 'hold_key' | 'toggle_key'
+  let detecting = $state<DictationKey | ''>('')
+  let detectNote = $state<{ field: DictationKey; text: string } | null>(null)
 
   function adopt(c: Config) {
     saved = structuredClone(c)
@@ -125,6 +129,24 @@
     picking = false
   }
 
+  /** Binds the next key pressed (the window waits about 5 s) to a dictation gesture. */
+  async function detect(field: DictationKey) {
+    if (detecting) return
+    detecting = field
+    detectNote = null
+    try {
+      const { key } = await local.detectKey()
+      if (key && form) form.dictation[field] = key.id
+      detectNote = {
+        field,
+        text: key ? `Detected ${key.name}.` : 'No key detected. Some keyboards do not report keys such as Fn to Windows.',
+      }
+    } catch (e) {
+      detectNote = { field, text: `Could not detect a key: ${(e as Error).message}` }
+    }
+    detecting = ''
+  }
+
   async function loadModel(id: string) {
     modelError = ''
     try {
@@ -139,6 +161,16 @@
   const t = $derived(tx.current)
   // Loading another model frees the one a running transcription is using.
   const jobsRunning = $derived((t.state?.jobs ?? []).some((j) => j.state === 'queued' || j.state === 'running'))
+
+  const DICTATION_KEYS: { field: DictationKey; label: string; help: string }[] = [
+    { field: 'hold_key', label: 'Hold to talk', help: 'Hold the key, speak, release to paste.' },
+    { field: 'toggle_key', label: 'Double-tap for hands-free', help: 'Double-tap to start, double-tap again to paste.' },
+  ]
+
+  const PASTE_MODES: { value: PasteMode; label: string }[] = [
+    { value: 'live', label: 'While I speak' },
+    { value: 'end', label: 'When I finish' },
+  ]
 
   const MODES: { value: CaptureMode; label: string }[] = [
     { value: 'both', label: 'Mic + system audio' },
@@ -228,6 +260,38 @@
             <input class="input w-56 font-mono text-[13px]" placeholder="e.g. ctrl+alt+R" bind:value={form.hotkeys[key]} spellcheck="false" />
           </Field>
         {/each}
+      </Card>
+
+      <Card title="Dictation" description="Talk into any text field: your words are typed where the cursor is.">
+        {#snippet aside()}
+          <Toggle label="Dictation" hideLabel bind:checked={form!.dictation.enabled} />
+        {/snippet}
+        <div class={['flex flex-col gap-4 transition-opacity', !form.dictation.enabled && 'pointer-events-none opacity-50']}>
+          {#each DICTATION_KEYS as k (k.field)}
+            <Field label={k.label} help={k.help}>
+              <select class="input w-56" bind:value={form.dictation[k.field]} disabled={!!detecting}>
+                {#each keyOptions(form.dictation[k.field]) as o (o.id)}<option value={o.id}>{o.label}</option>{/each}
+              </select>
+              <button class="btn" onclick={() => detect(k.field)} disabled={!!detecting}
+                >{detecting === k.field ? 'Press a key…' : 'Detect…'}</button
+              >
+              {#if detectNote?.field === k.field}<span class="basis-full text-[12.5px] text-muted">{detectNote.text}</span>{/if}
+            </Field>
+          {/each}
+          <Field
+            label="Paste the text"
+            help="“While I speak” types each phrase after a short pause, in hands-free mode. Hold to talk always pastes on release."
+          >
+            <Segmented label="Paste the text" bind:value={form.dictation.paste_mode} options={PASTE_MODES} />
+          </Field>
+          <Toggle label="Keep the audio of each dictation" bind:checked={form.dictation.keep_audio} />
+          <div class="hint hint-neutral">
+            <span
+              >Dictation needs the speech service (the transcriber) with a model loaded. If it is not running, the first
+              dictation starts it. Esc cancels. Audio is kept in the “dictation” folder inside the recordings folder.</span
+            >
+          </div>
+        </div>
       </Card>
 
       <Card title="Startup">

@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager, nullcontext
 
 import numpy as np
 
@@ -25,7 +26,8 @@ def _download(repo, revision, filename, dest):
 
 
 class BarkEngine:
-    """Underdog Bark 3.0: Parakeet TDT 0.6B v3 fine-tune, English, PyTorch."""
+    """Underdog Bark 3.0: Parakeet TDT 0.6B v3 fine-tune, English. PyTorch,
+    with the encoder optionally on Intel graphics through OpenVINO."""
     id = "bark"
     name = "underdog-bark-3.0"
     credit = ("Underdog Bark 3.0 by Conway Research (CC-BY-4.0), "
@@ -34,19 +36,48 @@ class BarkEngine:
     REVISION = "85db2ad18ab41e534a222ee253c29191d77ed919"
     LEAD_IN_SECS = 0.25  # silence before each piece, as the model was evaluated
     BATCH = 4
+    FRAME_BUCKET = 256  # OpenVINO: input lengths are padded up to a multiple of this (2.56 s)
 
-    def __init__(self, cache_root, device="cpu"):
+    def __init__(self, cache_root, device="auto"):
+        """`device`: "cpu" / "cuda" = all of it in PyTorch; "gpu" = the encoder
+        on Intel graphics through OpenVINO (measured on a Core Ultra 7 155U:
+        11-14x real time against 4x on the CPU); "auto" = "gpu" when there is
+        one and it loads, else "cpu"."""
         import torch
         from . import bark_loader
+        if device not in ("auto", "cpu", "gpu", "cuda"):
+            raise RuntimeError(f"device {device!r} is not one of auto, cpu, gpu, cuda")
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("device = \"cuda\" but this torch build has no CUDA; use \"cpu\"")
         self.torch = torch
-        self.device = device
         path = _download(self.REPO, self.REVISION, "model.bark", cache_root / "models" / "underdog-bark-3.0")
-        self.model, self.processor = bark_loader.load_model(path, cache_dir=str(cache_root / "hf"), device=device)
-        self.device_label = device.upper() if device == "cuda" else f"CPU ({torch.get_num_threads()} threads)"
+        self.openvino = False
+        if device == "gpu" or (device == "auto" and bark_loader.openvino_gpu()):
+            try:
+                self.model, self.processor = bark_loader.load_openvino(path, cache_root, self.REVISION)
+                self.openvino = True
+            except Exception as e:
+                if device == "gpu":
+                    raise RuntimeError(f"device = \"gpu\": OpenVINO could not load Bark on the GPU ({e})") from e
+                log.warning("Bark on the GPU failed, using the CPU: %s", e)
+        self.device = "cuda" if device == "cuda" else "cpu"  # where the PyTorch part runs
+        if not self.openvino:
+            self.model, self.processor = bark_loader.load_model(
+                path, cache_dir=str(cache_root / "hf"), device=self.device, rev=self.REVISION)
+        self.device_label = ("Intel GPU (OpenVINO)" if self.openvino else "CUDA" if device == "cuda"
+                             else f"CPU ({torch.get_num_threads()} threads)")
 
-    def transcribe(self, samples, pieces, on_piece=lambda i: None, cancelled=lambda: False):
+    def _fixed_shape(self, inputs):
+        """The GPU compiles kernels for every new input shape (about 8 s each,
+        then cached), so pad the length to a few fixed sizes. The attention
+        mask marks the padding."""
+        pad = -inputs["input_features"].shape[1] % self.FRAME_BUCKET
+        F = self.torch.nn.functional
+        return {"input_features": F.pad(inputs["input_features"], (0, 0, 0, pad)),
+                "attention_mask": F.pad(inputs["attention_mask"], (0, pad))}
+
+    def transcribe(self, samples, pieces, on_piece=lambda i: None, cancelled=lambda: False, turn=nullcontext):
+        """`turn()` is a context manager held around each batch, so a dictation can cut in between batches."""
         lead = np.zeros(int(self.LEAD_IN_SECS * SAMPLE_RATE), np.float32)
         texts = [""] * len(pieces)
         # Similar lengths per batch keep the padding small.
@@ -56,9 +87,11 @@ class BarkEngine:
                 raise Cancelled()
             idx = order[b:b + self.BATCH]
             waves = [np.concatenate([lead, samples[pieces[i].start:pieces[i].end]]) for i in idx]
+            if self.openvino:
+                waves += [waves[-1]] * (self.BATCH - len(waves))  # always a full batch: one shape fewer
             inputs = self.processor(waves, sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True)
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            with self.torch.inference_mode():
+            inputs = self._fixed_shape(inputs) if self.openvino else {k: v.to(self.device) for k, v in inputs.items()}
+            with turn(), self.torch.inference_mode():
                 out = self.model.generate(**inputs)
             for i, text in zip(idx, self.processor.batch_decode(out.sequences, skip_special_tokens=True)):
                 texts[i] = text.strip()
@@ -123,13 +156,14 @@ class WhistleEngine:
                 p.terminate()
             self.pool = None
 
-    def transcribe(self, samples, pieces, on_piece=lambda i: None, cancelled=lambda: False):
+    def transcribe(self, samples, pieces, on_piece=lambda i: None, cancelled=lambda: False, turn=nullcontext):
         if self.model is not None:
             texts = []
             for i, p in enumerate(pieces):
                 if cancelled():
                     raise Cancelled()
-                result = self.model.transcribe(samples[p.start:p.end], language=self.language)
+                with turn():  # the one native model: a dictation may cut in between pieces
+                    result = self.model.transcribe(samples[p.start:p.end], language=self.language)
                 texts.append(result.get("text", "").strip())
                 on_piece(i)
             return texts
@@ -175,7 +209,8 @@ CATALOG = [  # in display order
     {"id": "whistle", "label": "Cactus Whistle",
      "description": "English, German, French, Spanish, Italian, Dutch, Polish. Fast and small (17 MB), less accurate."},
     {"id": "bark", "label": "Underdog Bark 3.0",
-     "description": "English. Most accurate. 163 MB download, PyTorch; about a minute to load."},
+     "description": "English. Most accurate. 163 MB download; the first load takes a few minutes, "
+                    "later ones under a minute. Uses Intel graphics when available."},
 ]
 
 
@@ -193,6 +228,32 @@ class EngineCache:
         self.loading = None
         self.error = ""
         self.load_secs = None
+        # The loaded engine does one piece at a time. A batch job takes `turn()`
+        # per piece; a dictation takes `dictation()`, which waits for the piece in
+        # flight and makes batch jobs wait until it is done.
+        self._use = threading.Lock()
+        self._turns = threading.Condition()
+        self._dictating = 0
+
+    @contextmanager
+    def turn(self):
+        with self._turns:
+            while self._dictating:
+                self._turns.wait()
+        with self._use:
+            yield
+
+    @contextmanager
+    def dictation(self):
+        with self._turns:
+            self._dictating += 1
+        try:
+            with self._use:
+                yield
+        finally:
+            with self._turns:
+                self._dictating -= 1
+                self._turns.notify_all()
 
     def load_async(self, model):
         self.active, self.error = model, ""

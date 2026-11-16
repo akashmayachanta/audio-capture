@@ -9,6 +9,7 @@ use tray_icon::{Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::config::{CaptureMode, Config};
 use crate::controller::State;
+use crate::dictation::service::{self, ServiceState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconKind {
@@ -82,6 +83,8 @@ pub enum MenuCommand {
     Marker,
     ToggleAuto,
     Mode(CaptureMode),
+    /// Start or stop the speech (transcriber) service.
+    SpeechService,
     OpenFolder,
     Recordings,
     Settings,
@@ -98,6 +101,8 @@ pub struct Tray {
     marker: MenuItem,
     auto: CheckMenuItem,
     modes: [(CaptureMode, CheckMenuItem); 3],
+    speech: MenuItem,
+    service: Option<ServiceState>,
     open_folder: MenuItem,
     recordings: MenuItem,
     settings: MenuItem,
@@ -117,6 +122,7 @@ impl Tray {
             (CaptureMode::Both, CheckMenuItem::new("Microphone + system", true, false, None)),
         ];
         let capture = Submenu::with_items("Capture", true, &[&modes[0].1, &modes[1].1, &modes[2].1])?;
+        let speech = MenuItem::new(service::menu_item(ServiceState::Down).0, true, None);
         let open_folder = MenuItem::new("Open recordings folder", true, None);
         let recordings = MenuItem::new("Recordings…", true, None);
         let settings = MenuItem::new("Settings…", true, None);
@@ -129,6 +135,8 @@ impl Tray {
             &PredefinedMenuItem::separator(),
             &auto,
             &capture,
+            &PredefinedMenuItem::separator(),
+            &speech,
             &PredefinedMenuItem::separator(),
             &open_folder,
             &recordings,
@@ -154,11 +162,23 @@ impl Tray {
             marker,
             auto,
             modes,
+            speech,
+            service: None,
             open_folder,
             recordings,
             settings,
             quit,
         })
+    }
+
+    /// Shows the speech service's state in its menu item. Cheap when unchanged.
+    pub fn set_service(&mut self, state: ServiceState) {
+        if self.service != Some(state) {
+            self.service = Some(state);
+            let (text, enabled) = service::menu_item(state);
+            self.speech.set_text(text);
+            self.speech.set_enabled(enabled);
+        }
     }
 
     pub fn command_for(&self, id: &MenuId) -> Option<MenuCommand> {
@@ -173,6 +193,8 @@ impl Tray {
             Some(MenuCommand::Marker)
         } else if is(self.auto.id()) {
             Some(MenuCommand::ToggleAuto)
+        } else if is(self.speech.id()) {
+            Some(MenuCommand::SpeechService)
         } else if is(self.open_folder.id()) {
             Some(MenuCommand::OpenFolder)
         } else if is(self.recordings.id()) {

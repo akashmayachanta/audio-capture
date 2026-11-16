@@ -15,6 +15,7 @@ const base: Config = {
   hotkeys: { start_stop: 'ctrl+alt+R', pause: 'ctrl+alt+P', split: 'ctrl+alt+S', marker: 'ctrl+alt+M' },
   start_with_windows: false,
   transcriber_dir: '',
+  dictation: { enabled: true, hold_key: 'RightAlt', toggle_key: 'RightAlt', keep_audio: true, max_secs: 300, paste_mode: 'live' },
 }
 
 test('an untouched form takes everything from the file', () => {
@@ -35,6 +36,14 @@ test('an edited hotkey keeps the whole hotkeys group', () => {
   const merged = rebase(base, edited, fresh)
   expect(merged.hotkeys.split).toBe('F9')
   expect(merged.start_with_windows).toBe(true)
+})
+
+test('an edited dictation key keeps the whole dictation group', () => {
+  const edited: Config = { ...base, dictation: { ...base.dictation, hold_key: 'F13' } }
+  const fresh: Config = { ...base, dictation: { ...base.dictation, keep_audio: false }, auto_record: false }
+  const merged = rebase(base, edited, fresh)
+  expect(merged.dictation).toEqual(edited.dictation)
+  expect(merged.auto_record).toBe(false)
 })
 
 test('the result shares no objects with its inputs', () => {

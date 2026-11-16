@@ -20,6 +20,8 @@ use crate::autostart;
 use crate::config::{self, Config, ConfigWatcher};
 use crate::controller::{Action, Controller, Input, State};
 use crate::detect::mic_usage::{self, UsageTracker};
+use crate::dictation::service::{ServiceState, SpeechService};
+use crate::dictation::{self, Dictation};
 use crate::hotkeys::Hotkeys;
 use crate::power::{self, PowerEvent};
 use crate::recorder::Recorder;
@@ -29,6 +31,8 @@ use crate::tray::{MenuCommand, Tray};
 const TICK: Duration = Duration::from_secs(1);
 /// How long the loop sleeps when no window message arrives.
 const IDLE_WAIT_MS: u32 = 50;
+/// The same while a dictation is being recorded or its overlay is on screen.
+const DICTATION_WAIT_MS: u32 = 16;
 
 pub struct App {
     config_path: PathBuf,
@@ -38,6 +42,10 @@ pub struct App {
     recorder: Option<Recorder>,
     tray: Tray,
     hotkeys: Hotkeys,
+    /// The transcriber ("speech service"): the tray menu item and, later, dictation.
+    speech: SpeechService,
+    /// Hold or double-tap a key to dictate into the focused field.
+    dictation: Dictation,
     detector: Receiver<BTreeSet<String>>,
     device_changes: Receiver<()>,
     power: Receiver<power::Notification>,
@@ -64,6 +72,7 @@ impl App {
         tray.sync_checks(&config);
         let mut hotkeys = Hotkeys::new()?;
         hotkeys.apply(&config.hotkeys);
+        let dictation = Dictation::new(&config);
         let (tx, detector) = mpsc::channel();
         mic_usage::spawn_detector(tx);
         let (dev_tx, device_changes) = mpsc::channel();
@@ -82,6 +91,8 @@ impl App {
             recorder: None,
             tray,
             hotkeys,
+            speech: SpeechService::new(config::app_dir().join("logs").join("transcriber.log")),
+            dictation,
             detector,
             device_changes,
             power: power_rx,
@@ -141,7 +152,17 @@ impl App {
             }
             let elapsed = self.recorder.as_ref().map(Recorder::elapsed).unwrap_or_default();
             self.tray.update(self.controller.state(), elapsed);
-            unsafe { MsgWaitForMultipleObjects(None, false, IDLE_WAIT_MS, QS_ALLINPUT) };
+            let now = Instant::now();
+            let service = self.speech.poll(now);
+            self.tray.set_service(service);
+            let env = dictation::Env { speech: &self.speech, service, transcriber_dir: &self.config.transcriber_dir };
+            let notices = self.dictation.poll(now, &env);
+            for message in notices {
+                self.notify(&message);
+            }
+            // The overlay animates at ~60 fps and a hold is timed in the loop: wake often then.
+            let wait = if self.dictation.wants_fast_loop() { DICTATION_WAIT_MS } else { IDLE_WAIT_MS };
+            unsafe { MsgWaitForMultipleObjects(None, false, wait, QS_ALLINPUT) };
         }
         self.feed(Input::ManualStop);
         tracing::info!("exiting");
@@ -153,7 +174,10 @@ impl App {
         // Either way, whoever holds the mic afterwards is reported afresh.
         self.usage.reset();
         match event {
-            PowerEvent::Suspend => self.feed(Input::Suspend),
+            PowerEvent::Suspend => {
+                self.dictation.suspend();
+                self.feed(Input::Suspend)
+            }
             PowerEvent::Resume => self.refresh_mic_usage(),
         }
     }
@@ -190,6 +214,17 @@ impl App {
                 // Takes effect from the next recording.
                 self.config.capture_mode = mode;
                 self.save_config();
+            }
+            MenuCommand::SpeechService => {
+                let now = Instant::now();
+                let result = match self.speech.poll(now) {
+                    ServiceState::Down => self.speech.start(&self.config.transcriber_dir),
+                    ServiceState::Up => self.speech.stop(now),
+                    ServiceState::Starting | ServiceState::Stopping => Ok(()),
+                };
+                if let Err(e) = result {
+                    self.notify(&e);
+                }
             }
             MenuCommand::OpenFolder => {
                 let _ = std::fs::create_dir_all(&self.config.output_dir);
@@ -235,6 +270,7 @@ impl App {
             sync_autostart(new.start_with_windows);
         }
         self.tray.sync_checks(new);
+        self.dictation.apply_config(new);
         if old.auto_record != new.auto_record {
             self.feed(Input::AutoRecordChanged(self.config.auto_record));
         }

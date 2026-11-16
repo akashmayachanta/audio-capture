@@ -13,7 +13,7 @@ MODELS = ("bark", "whistle")
 class Settings:
     recordings_dir: str = ""
     model: str = "whistle"
-    device: str = "cpu"
+    device: str = "auto"
     language: str = "en"
     workers: int = 0
     cache_dir: str = ""

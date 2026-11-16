@@ -57,11 +57,14 @@ def describe(root, opus):
 
 
 def list_recordings(root):
-    """Newest first. `.opus.part` files (still recording) are skipped by the glob."""
+    """Newest first. `.opus.part` files (still recording) are skipped by the glob,
+    and so is the top-level `dictation/` folder (dictation clips, not meetings)."""
     root = Path(root)
     if not root.is_dir():
         return []
-    items = [describe(root, p) for p in root.rglob("*.opus") if p.is_file()]
+    dictation = root / "dictation"
+    items = [describe(root, p) for p in root.rglob("*.opus")
+             if p.is_file() and not p.is_relative_to(dictation)]
     return sorted(items, key=lambda r: r["sort"], reverse=True)
 
 

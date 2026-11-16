@@ -9,6 +9,7 @@ pub mod tray;
 pub mod hotkeys;
 pub mod app;
 pub mod detect;
+pub mod dictation;
 pub mod autostart;
 pub mod power;
 pub mod recordings;

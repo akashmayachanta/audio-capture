@@ -27,7 +27,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tray-icon = "0.26"
 uuid = { version = "1.28.0", features = ["v4"] }
 wasapi = "0.26"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Power", "Win32_Media_Audio", "Win32_System_Registry", "Win32_System_Console"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Power", "Win32_Media_Audio", "Win32_System_Registry", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_UI_Input"] }
 winreg = "0.56"
 wry = "0.57"
 

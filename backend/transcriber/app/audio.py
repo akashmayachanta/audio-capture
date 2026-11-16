@@ -18,6 +18,24 @@ def speakers_for(channels, n_channels):
             for side, default in (("left", "mic"), ("right", "system"))][:n_channels]
 
 
+def decode_bytes(data):
+    """A dictation clip (Ogg Opus bytes) -> 16 kHz mono float32; the first channel if there are more."""
+    import io
+
+    import av
+    with av.open(io.BytesIO(data)) as container:
+        stream = container.streams.audio[0]
+        resampler = av.AudioResampler(format="fltp", layout=stream.layout.name, rate=SAMPLE_RATE)
+        parts = []
+        for frame in container.decode(stream):
+            frame.pts = None
+            parts.extend(r.to_ndarray() for r in resampler.resample(frame))
+        parts.extend(r.to_ndarray() for r in resampler.resample(None))
+    if not parts:
+        return np.zeros(0, np.float32)
+    return np.ascontiguousarray(np.concatenate(parts, axis=1)[0], dtype=np.float32)
+
+
 def decode(path, channels=None):
     """-> {"me": samples, "others": samples} (only the speakers the file holds)."""
     import av

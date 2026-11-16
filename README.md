@@ -11,6 +11,8 @@ diarization.
 - **Manual**: start/stop, pause/resume, split and markers from the tray menu or
   hotkeys. Manual recordings are only stopped manually.
 - **Capture mode**: mic + system (stereo), mic only or system only (mono).
+- **Dictation**: hold Right Alt, speak, release: the text is typed where your
+  cursor is (see [Dictation](#dictation)).
 
 ## Using it
 
@@ -48,9 +50,52 @@ see it on the right:
   everything else, including existing transcripts, still works.
 
 **Settings** edits `config.toml` (capture, devices, folder, quality,
-auto-record apps and timing, hotkeys, start with Windows); **Save** writes it and
+auto-record apps and timing, hotkeys, dictation keys, start with Windows); **Save** writes it and
 the tray picks up the change live. Its **Transcription** card loads models
 while the transcriber is running.
+
+## Dictation
+
+Speak into any text field, in any app.
+
+| Gesture | What happens |
+|---|---|
+| Hold **Right Alt**, speak, release | the text is pasted where the cursor is |
+| Double-tap **Right Alt** | hands-free: keeps listening until you double-tap again |
+| **Esc** | cancels (while listening or transcribing) |
+
+A small round microphone badge at the bottom of the screen shows the state:
+teal = listening (its halo grows with your voice), amber = the speech service is
+starting, indigo = transcribing (a light runs round the rim), red = error. Messages such as "No speech heard" arrive as toasts.
+Right Alt with another key (AltGr combinations) types normally, and a single
+quick tap does nothing.
+
+- **Requirements**: the transcriber (see [Transcription](#transcription)) with
+  a model loaded. If it is not running, the first dictation starts it and
+  waits up to 90 s; dictation never stops it. The tray menu has **Start / Stop
+  speech service** for doing it by hand. A dictation cuts in ahead of a running
+  meeting transcription, which then continues.
+- **Keys**: **Settings → Dictation** picks the key for each gesture (or Off).
+  **Detect…** binds the next key you press. Keys a keyboard handles by itself
+  (Fn on most laptops) are not reported to Windows and can't be used.
+- **While you speak**: the audio is cut into phrases at pauses (about 0.6 s)
+  and each phrase is transcribed straight away, so little is left to do when
+  you stop. In hands-free mode each phrase is typed as soon as it is ready;
+  choose **Settings → Dictation → Paste the text → When I finish** to get
+  everything at once instead (Esc then discards all of it; with "While I
+  speak", what is already typed stays). Hold to talk always pastes on release,
+  because the held key would get in the way of the paste.
+- **Pasting**: the text goes through the clipboard (Ctrl+V); the text that was
+  there is put back half a second later and the dictation is kept out of the
+  clipboard history. When the clipboard holds an image or files the text is
+  typed instead, so nothing is lost. In a window running as administrator the
+  text stays on the clipboard and a toast says so.
+- **Audio**: each dictation is kept as a mono Opus clip in
+  `<output_dir>\dictation\YYYY\MM\` (turn off **Keep the audio** in Settings
+  to delete them). These clips don't show in the Recordings list.
+- Listening stops by itself after `max_secs` (default 300 s) and transcribes
+  what it has. Dictation works during a meeting recording and doesn't trigger
+  auto-record.
 
 ## Transcription
 
@@ -69,7 +114,7 @@ first start installs the Python environment and can take a few minutes. By hand:
 
 ```powershell
 cd backend\transcriber
-uv sync                      # once: Python 3.11, PyTorch (CPU), models' runtimes
+uv sync                      # once: Python 3.11, PyTorch (CPU), OpenVINO, models' runtimes
 uv run python -m app         # API on http://127.0.0.1:8765/
 ```
 
@@ -93,13 +138,22 @@ becomes one timestamped line.
 | Model | Languages | Download | Runtime |
 |---|---|---|---|
 | [Cactus Whistle](https://huggingface.co/Cactus-Compute/whistle) (default) | en, de, fr, es, it, nl, pl | 17 MB | `cactus-needle` native CPU engine |
-| [Underdog Bark 3.0](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0) | English | 163 MB | PyTorch, CPU (or CUDA) |
+| [Underdog Bark 3.0](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0) | English | 163 MB | PyTorch on the CPU (or CUDA); on Intel graphics the encoder runs through OpenVINO |
 
 Bark is a fine-tune of NVIDIA Parakeet TDT 0.6B v3 and the more accurate of
 the two. Weights are downloaded the first time a model loads, at pinned
-revisions; loading Bark also unpacks its weights (one to two minutes on a
-laptop CPU), after which it stays loaded while the server runs. Whistle's anonymous usage telemetry is turned off
-(`NEEDLE_TELEMETRY=0`).
+revisions. The first Bark load also unpacks its weights and, with Intel
+graphics, converts and compiles the encoder for the GPU (two to three minutes
+in all, once); the results are kept in the cache folder (about 1.3 GB, or
+3.7 GB with the GPU files), so later loads take well under a minute. Whistle's
+anonymous usage telemetry is turned off (`NEEDLE_TELEMETRY=0`), and so is
+OpenVINO's.
+
+**Bark device** (`device` in `settings.toml`): `auto` (default) uses Intel
+graphics when OpenVINO finds a GPU and falls back to the CPU if that fails;
+`cpu`, `gpu` and `cuda` force one. On a Core Ultra 7 155U the integrated GPU
+ran Bark at 10-13x real time against 3-4x on the CPU, with 2-3 words in 400
+differing (punctuation).
 
 **Speed / cores**: one Whistle engine uses only about 2 cores, so the
 transcriber runs several Whistle processes side by side, each with its own copy
@@ -194,6 +248,13 @@ pause = "ctrl+alt+P"
 split = "ctrl+alt+S"
 marker = "ctrl+alt+M"
 
+[dictation]
+enabled = true
+hold_key = "RightAlt"          # hold to talk; "" = off. RightAlt, RightCtrl, CapsLock, F13..F24, vk:0x7B, ...
+toggle_key = "RightAlt"        # double-tap for hands-free; "" = off
+keep_audio = true              # keep clips under <output_dir>\dictation
+max_secs = 300                 # listening stops by itself (5..600)
+paste_mode = "live"            # live = hands-free types each phrase as it is ready; end = all at once
 ```
 
 Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).

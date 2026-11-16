@@ -7,14 +7,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
-from . import recordings
+from . import dictation, recordings
 from .engines import CATALOG, EngineCache
 from .jobs import Jobs
 from .store import Store
 
 # The MeetRec window (WebView2 custom protocol) calls this API cross-origin.
 APP_ORIGIN = "http://meetrec.localhost"
+MAX_DICTATION_BYTES = 20 * 1024 * 1024
 log = logging.getLogger("transcriber")
 
 
@@ -102,6 +104,30 @@ def create_app(s, engines, store, jobs=None, shutdown=lambda: None):
     @app.post("/api/cancel")
     def cancel(req: CancelRequest):
         return {"cancelled": jobs.cancel(req.job_id)}
+
+    @app.get("/api/health")
+    def health():
+        """Cheap liveness check for the tray (state lists every recording)."""
+        return {"ok": True}
+
+    @app.post("/api/dictate")
+    async def dictate(request: Request):
+        """Body = a dictation clip (Ogg Opus). Not a job: the answer is the text."""
+        if int(request.headers.get("content-length") or 0) > MAX_DICTATION_BYTES:
+            raise HTTPException(413, "clip too large")
+        data = await request.body()
+        if not data:
+            raise HTTPException(400, "no audio")
+        try:
+            return await run_in_threadpool(dictation.transcribe, engines, data)
+        except dictation.NoModel as e:
+            raise HTTPException(409, str(e)) from None
+        except dictation.Loading as e:
+            raise HTTPException(503, str(e)) from None
+        except dictation.BadAudio as e:
+            raise HTTPException(400, str(e)) from None
+        except dictation.ModelFailed as e:
+            raise HTTPException(500, str(e)) from None
 
     @app.post("/api/shutdown")
     def stop():

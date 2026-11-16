@@ -5,6 +5,7 @@ pub mod assets;
 pub mod files;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use http::{header, Method, Request, Response, StatusCode};
 use serde::Deserialize;
@@ -26,7 +27,13 @@ pub trait Host {
     /// Starts `uv run python -m app` in `dir`.
     fn start_transcriber(&self, dir: &Path) -> Result<(), String>;
     fn transcriber_status(&self) -> LaunchStatus;
+    /// Waits for the next key press: (`KeyId` name, display name). `None` when
+    /// nothing was pressed in time.
+    fn detect_key(&self, timeout: Duration) -> Option<(String, String)>;
 }
+
+/// How long Settings' "Detect" waits for a key.
+const DETECT_KEY_TIMEOUT: Duration = Duration::from_secs(5);
 
 type Resp = Response<Vec<u8>>;
 
@@ -79,6 +86,11 @@ pub fn handle(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
                 Ok(()) => ok_json(json!({ "dir": dir })),
                 Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e),
             },
+        }),
+        "detect-key" => only(Method::POST, &|| {
+            // Esc cancels a dictation, so it cannot be a dictation key: pressing it cancels Detect.
+            let key = host.detect_key(DETECT_KEY_TIMEOUT).filter(|(id, _)| id.as_str() != "Escape");
+            ok_json(json!({ "key": key.map(|(id, name)| json!({ "id": id, "name": name })) }))
         }),
         _ => not_found(),
     }
@@ -258,6 +270,8 @@ mod tests {
         picked: Option<PathBuf>,
         started: RefCell<Vec<PathBuf>>,
         start_error: Option<String>,
+        detected: Option<(String, String)>,
+        detect_timeouts: RefCell<Vec<Duration>>,
     }
 
     impl FakeHost {
@@ -269,6 +283,8 @@ mod tests {
                 picked: None,
                 started: RefCell::new(Vec::new()),
                 start_error: None,
+                detected: None,
+                detect_timeouts: RefCell::new(Vec::new()),
             };
             // Never point a test at the real recordings folder.
             let mut c = Config::default();
@@ -312,6 +328,10 @@ mod tests {
         }
         fn transcriber_status(&self) -> LaunchStatus {
             LaunchStatus { running: !self.started.borrow().is_empty(), ..Default::default() }
+        }
+        fn detect_key(&self, timeout: Duration) -> Option<(String, String)> {
+            self.detect_timeouts.borrow_mut().push(timeout);
+            self.detected.clone()
         }
     }
 
@@ -583,6 +603,29 @@ mod tests {
         assert_eq!(r.status(), 500);
         assert_eq!(json(&r)["error"], "uv was not found on PATH");
         assert_eq!(handle(&host, &req("GET", &format!("{BASE}/api/transcriber/start"), "")).status(), 405);
+    }
+
+    #[test]
+    fn detect_key_returns_the_key_or_null() {
+        let mut host = FakeHost::new();
+        let uri = format!("{BASE}/api/detect-key");
+        let r = handle(&host, &req("POST", &uri, ""));
+        assert_eq!(r.status(), 200);
+        assert!(json(&r)["key"].is_null(), "nothing pressed");
+        host.detected = Some(("RightAlt".into(), "Right Alt".into()));
+        let v = json(&handle(&host, &req("POST", &uri, "")));
+        assert_eq!(v["key"]["id"], "RightAlt");
+        assert_eq!(v["key"]["name"], "Right Alt");
+        assert_eq!(*host.detect_timeouts.borrow(), vec![Duration::from_secs(5); 2]);
+        assert_eq!(handle(&host, &req("GET", &uri, "")).status(), 405);
+    }
+
+    #[test]
+    fn detect_key_treats_escape_as_cancel() {
+        let mut host = FakeHost::new();
+        host.detected = Some(("Escape".into(), "Escape".into()));
+        let v = json(&handle(&host, &req("POST", &format!("{BASE}/api/detect-key"), "")));
+        assert!(v["key"].is_null());
     }
 
     #[test]

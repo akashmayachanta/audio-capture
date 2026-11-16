@@ -85,6 +85,22 @@ impl Launcher {
         }
     }
 
+    /// Ends the process this launcher started together with its children (uv → python).
+    /// False when nothing of ours is running or `taskkill` failed.
+    pub fn kill_tree(&self) -> bool {
+        let mut child = self.child.lock().unwrap();
+        let Some(c) = child.as_mut() else { return false };
+        if !matches!(c.try_wait(), Ok(None)) {
+            return false;
+        }
+        use std::os::windows::process::CommandExt;
+        Command::new("taskkill")
+            .args(["/PID", &c.id().to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
     pub fn status(&self) -> LaunchStatus {
         let mut child = self.child.lock().unwrap();
         let Some(c) = child.as_mut() else { return LaunchStatus::default() };
