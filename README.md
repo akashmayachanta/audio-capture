@@ -30,44 +30,52 @@ Run `meetrec.exe`. The tray icon shows the state:
 | Ctrl+Alt+S | split now       |
 | Ctrl+Alt+M | add marker      |
 
-A toast appears when an auto recording starts. **Settings…** in the tray menu
-opens the settings window (`meetrec.exe --settings`). It edits the config file,
-and the tray picks up changes live.
+A toast appears when an auto recording starts. **Recordings…** and
+**Settings…** in the tray menu open the MeetRec window (`meetrec.exe
+--recordings` / `--settings`, one window at a time). It follows Windows' light
+or dark mode.
 
-**Recordings…** opens the same window on its Recordings tab
-(`meetrec.exe --recordings`). It lists your recordings, newest first. Click one
-to load it, or double-click to play it. The controls are Play/Pause, Stop, a
-seek bar, and volume (up to 200% for quiet mics). You can listen to **Both**
-sides mixed into both ears, **Me only** (the mic, left channel), or **Others
-only** (system audio, right channel).
+**Recordings** lists your recordings grouped by day, newest first. Select one to
+see it on the right:
 
-Transcripts live in a separate local web page; see [Transcription](#transcription).
+- **Player**: play/pause, seek bar, volume. Both channels play in both ears;
+  **Listen** picks Both, Me only (the mic) or Others only (system audio).
+- **Transcript** (when the recording has one): lines labelled Me / Others,
+  filtered with **Show**. Click a line's timestamp to play from there; the line
+  being played is highlighted.
+- **Transcribe** / **Cancel** / progress beside each recording while the
+  transcriber is running (see [Transcription](#transcription)). Without it,
+  everything else, including existing transcripts, still works.
+
+**Settings** edits `config.toml` (capture, devices, folder, quality,
+auto-record apps and timing, hotkeys, start with Windows); **Save** writes it and
+the tray picks up the change live. Its **Transcription** card loads models
+while the transcriber is running.
 
 ## Transcription
 
-Manual, on-device speech-to-text in a small Python web app (`transcriber\`,
-FastAPI, set up with [uv](https://docs.astral.sh/uv/)). It is separate from the
-recorder: `meetrec.exe` only records. Nothing is transcribed by itself.
+Manual, on-device speech-to-text in an optional local API
+(`backend\transcriber\`, Python + FastAPI, set up with
+[uv](https://docs.astral.sh/uv/)). It has no page of its own: the MeetRec window
+is its UI. `meetrec.exe` only records, and nothing is transcribed by itself.
 
 ```powershell
-cd transcriber
+cd backend\transcriber
 uv sync                      # once: Python 3.11, PyTorch (CPU), models' runtimes
-uv run python -m app         # serves http://127.0.0.1:8765/ and opens it
+uv run python -m app         # API on http://127.0.0.1:8765/
 ```
 
-Or double-click `transcriber\run.bat`, which does the same (close its window to
-stop the server).
+Or double-click `backend\transcriber\run.bat`, which does the same (close its
+window to stop it). While it runs, the MeetRec window shows **Transcribe**
+beside each recording (**Redo** on one that has a transcript, **Cancel** while
+it runs). One job runs at a time; more clicks queue up. The transcriber must
+read the same folder MeetRec saves to; if its `recordings_dir` points
+elsewhere, the window says so and hides Transcribe.
 
-The page lists the recordings in MeetRec's `output_dir`, newest first, and
-shows the newest transcript by default. Each row has a **Transcribe** /
-**Re-transcribe** button beside it (and **Cancel** while it runs); click a row
-to read its transcript, filtered to Both / Me / Others. One job runs at a time;
-more clicks queue up.
-
-**Model**: the header shows which model is loaded (or loading, or failed). The
-gear button opens Settings, which lists both models with a **Load** button
-each. Only one model is in memory and transcriptions use it. The app loads a
-model as soon as it starts: the one you loaded last, or `model` from
+**Model**: the window's header shows which model is loaded (or loading, or
+failed). **Settings → Transcription** lists both models with a **Load** button
+each. Only one model is in memory and transcriptions use it. The transcriber
+loads a model as soon as it starts: the one you loaded last, or `model` from
 `settings.toml` the first time.
 
 The mic channel and the system channel are transcribed separately, so every
@@ -86,7 +94,7 @@ revisions; loading Bark also unpacks its weights (one to two minutes on a
 laptop CPU), after which it stays loaded while the server runs. Whistle's anonymous usage telemetry is turned off
 (`NEEDLE_TELEMETRY=0`).
 
-**Settings**: `transcriber\settings.toml` (recordings folder, default model,
+**Settings**: `backend\transcriber\settings.toml` (recordings folder, default model,
 Bark device, Whistle language, cache folder, port). Models are cached in
 `%LOCALAPPDATA%\MeetRec\transcriber` (plus the Whistle engine DLL in
 `~\.cache\cactus-needle`). `transcriber.db` there (SQLite) holds the model
@@ -107,7 +115,7 @@ replaces it. A recording counts as transcribed when its `.md` exists.
 ```
 
 **Model licences**: Bark is CC-BY-4.0 (Conway Research, derived from NVIDIA
-Parakeet TDT 0.6B v3; see `transcriber\app\BARK_NOTICE`), Whistle is
+Parakeet TDT 0.6B v3; see `backend\transcriber\app\BARK_NOTICE`), Whistle is
 Apache-2.0 (Cactus Compute). Each transcript names the model it came from.
 
 ## Output
@@ -122,7 +130,7 @@ Apache-2.0 (Cactus Compute). Each transcript names the model it came from.
 - Stereo files use two **uncoupled** Opus streams (channel mapping family 1).
   The encoder never blends left and right. Windows Media Player can't decode
   this layout and plays only the mic, so it sounds muffled and the others are
-  missing. Use the Recordings tab, VLC or ffmpeg instead.
+  missing. Use the MeetRec window, VLC or ffmpeg instead.
 - An Ogg page is flushed every second. After a crash, the leftover `.part` files
   are finalized on the next start with `"status": "recovered"`.
 - Auto recordings shorter than `min_duration_secs` (default 30 s) are discarded.
@@ -191,23 +199,50 @@ Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).
 - **Detection**: every 2 s the app reads the Windows privacy consent store
   (`HKCU\…\CapabilityAccessManager\ConsentStore\microphone`). An app is using the
   mic when `LastUsedTimeStart > 0` and `LastUsedTimeStop == 0`.
-- **Controller**: a pure state machine (`src/controller.rs`) drives everything.
-  The tray loop feeds it inputs and carries out its actions.
+- **Controller**: a pure state machine (`backend/recorder/src/controller.rs`)
+  drives everything. The tray loop feeds it inputs and carries out its actions.
+- **Window**: a separate short-lived process (`--settings` / `--recordings`), so
+  the tray never loads a GUI stack. It shows the Svelte app (`frontend/`, Svelte 5
+  + Tailwind CSS, embedded in the exe) in WebView2. The page talks to the exe over
+  a custom protocol (`http://meetrec.localhost/api/...`: config, devices,
+  recordings, audio with seeking, transcripts) and, when it's running, to the
+  transcriber API on `127.0.0.1:8765`.
 - Closes the recording on sleep and re-checks mic usage on wake.
+
+## Layout
+
+```
+frontend/               Svelte app (the window's UI); builds to frontend/dist
+backend/recorder/       Rust crate -> meetrec.exe (tray, capture, window host)
+backend/transcriber/    optional transcription API (Python, uv)
+build.ps1               builds the frontend, then the exe
+```
 
 ## Building
 
-Requires Rust (MSVC toolchain), the Visual Studio C++ build tools and CMake, which
-builds libopus statically. `.cargo/config.toml` sets `CMAKE_POLICY_VERSION_MINIMUM`
-so libopus builds with CMake 4.
+Requires Rust (MSVC toolchain), the MSVC C++ build tools, CMake (builds
+libopus statically) and Node.js (builds the UI). `.cargo/config.toml` sets
+`CMAKE_POLICY_VERSION_MINIMUM` so libopus builds with CMake 4. Without CMake you
+can point `LIBOPUS_LIB_DIR` at a folder whose `lib\` holds a prebuilt `opus.lib`.
 
-`build.ps1` finds the CMake bundled with the VS build tools, checks that MeetRec
-isn't locking the exe, and builds (`-Dev` debug build, `-Test` run unit tests first,
+Without admin rights: install CMake and Ninja per user with
+`uv tool install cmake` and `uv tool install ninja`, and use a portable MSVC
+(`cl.exe`, `link.exe`, `rc.exe` on `PATH`, `INCLUDE`/`LIB` set). When no Visual
+Studio install is registered, `build.ps1` builds libopus with the Ninja
+generator and the `cl.exe` on `PATH` (adding `/FS` to `CFLAGS`), and sets
+`RC_PATH` from the `rc.exe` on `PATH` for the exe's resources.
+
+`build.ps1` builds the frontend (`npm ci` when needed, `npm run build` only when the UI sources changed), finds CMake
+(on `PATH`, else the one bundled with the VS build tools), checks that MeetRec isn't locking the exe,
+and builds (`-Dev` debug build, `-Test` run frontend and Rust unit tests first,
 `-Start` launch the tray afterwards, `-Force` kill a running MeetRec):
 
 ```
-.\build.ps1 -Test -Start     # target\release\meetrec.exe
-cargo build --release        # same, if CMake is already on PATH
+.\build.ps1 -Test -Start     # backend\recorder\target\release\meetrec.exe
+cd frontend; npm test        # UI unit tests (Vitest)
+cd frontend; npm run dev     # UI dev server (API calls need the exe, so mostly for styling)
+cd backend\recorder
+cargo build --release        # exe only; embeds frontend\dist if it was built (else a placeholder page)
 cargo test --lib             # unit tests
 cargo test --lib -- --ignored  # + tests that need real audio devices
 meetrec.exe --record-test 60 out.opus   # 60 s capture spike, no tray
@@ -225,7 +260,10 @@ window runs from the same exe, so changes to it also need a rebuild.
 .\build.ps1 -Start                          # LTO build: needs plenty of RAM, takes a few minutes; then starts the tray
 ```
 
-The "start with Windows" entry points at `target\release\meetrec.exe`, so it
-picks up the new build automatically. Changing a default in `src/config.rs`
+The "start with Windows" entry points at the exe you started it from, so it picks
+up new builds in the same place automatically. The build output moved to
+`backend\recorder\target\release\meetrec.exe`; if you used the old
+`target\release` exe, start the tray from the new exe and turn **Start with
+Windows** off and on once (save in between) to point the entry at the new path. Changing a default in `src/config.rs`
 doesn't change an existing `config.toml`, which keeps the value it already has.
 Edit that value in Settings.

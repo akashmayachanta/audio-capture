@@ -1,0 +1,52 @@
+[package]
+name = "meetrec"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+audioadapter-buffers = "5"
+audiopus_sys = { version = "0.2.2", features = ["static"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+directories = "6.0.0"
+global-hotkey = "0.9"
+http = "1"
+include_dir = "0.7"
+ogg = "0.9"
+rfd = "0.17"
+ringbuf = "0.5"
+rubato = "5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tao = "0.37"
+tauri-winrt-notification = "0.8"
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tray-icon = "0.26"
+uuid = { version = "1.28.0", features = ["v4"] }
+wasapi = "0.26"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Power", "Win32_Media_Audio", "Win32_System_Registry", "Win32_System_Console"] }
+winreg = "0.56"
+wry = "0.57"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+# Thin LTO + parallel codegen: a release rebuild after a code change takes a
+# fraction of the time of fat LTO with codegen-units = 1, for a slightly larger exe.
+lto = "thin"
+opt-level = "s"
+strip = true
+
+# libopus is a C build (cmake crate). At opt-level 0 the crate configures it as
+# CMake "Debug", which links the debug CRT (/MDd) that Rust doesn't use: the
+# test binary then fails with unresolved __imp__CrtDbgReportW. Optimizing it
+# makes it a Release-style build with /MD, and recording cheaper in dev builds.
+[profile.dev.package.audiopus_sys]
+opt-level = 2

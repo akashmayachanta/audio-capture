@@ -1,0 +1,15 @@
+pub mod audio;
+pub mod encode;
+pub mod session;
+pub mod controller;
+pub mod config;
+pub mod recorder;
+pub mod tray;
+pub mod hotkeys;
+pub mod app;
+pub mod detect;
+pub mod autostart;
+pub mod power;
+pub mod recordings;
+pub mod web_api;
+pub mod window;
