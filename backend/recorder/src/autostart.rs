@@ -7,15 +7,21 @@ use winreg::RegKey;
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE: &str = "MeetRec";
 
-/// Adds or removes the Run entry for the current exe.
-pub fn set_enabled(enabled: bool) -> Result<()> {
+/// Makes the Run entry match `enabled` for the running exe, also when it
+/// exists but names another copy (e.g. an old build folder). True if it changed.
+pub fn sync(enabled: bool) -> Result<bool> {
     let exe = std::env::current_exe()?;
     let command = format!("\"{}\"", exe.display());
-    set_run_entry(RUN_KEY, VALUE, enabled.then_some(command.as_str()))
+    sync_entry(RUN_KEY, VALUE, enabled.then_some(command.as_str()))
 }
 
-pub fn is_enabled() -> bool {
-    run_entry(RUN_KEY, VALUE).is_some()
+/// Writes `wanted` under HKCU\`key` only when it differs from what is there.
+pub fn sync_entry(key: &str, name: &str, wanted: Option<&str>) -> Result<bool> {
+    if run_entry(key, name).as_deref() == wanted {
+        return Ok(false);
+    }
+    set_run_entry(key, name, wanted)?;
+    Ok(true)
 }
 
 /// Writes (`Some`) or deletes (`None`) a value under HKCU\`key`.
@@ -67,6 +73,20 @@ mod tests {
         assert_eq!(run_entry(&key.0, "MeetRec").as_deref(), Some(r#""C:\Apps\meetrec.exe""#));
         set_run_entry(&key.0, "MeetRec", None).unwrap();
         assert_eq!(run_entry(&key.0, "MeetRec"), None);
+    }
+
+    #[test]
+    fn sync_replaces_a_stale_path_and_leaves_a_current_one() {
+        let key = scratch();
+        let old = r#""C:\Old\target\release\meetrec.exe""#;
+        let new = r#""C:\New\backend\recorder\target\release\meetrec.exe""#;
+        set_run_entry(&key.0, "MeetRec", Some(old)).unwrap();
+        assert!(sync_entry(&key.0, "MeetRec", Some(new)).unwrap(), "stale path is rewritten");
+        assert_eq!(run_entry(&key.0, "MeetRec").as_deref(), Some(new));
+        assert!(!sync_entry(&key.0, "MeetRec", Some(new)).unwrap(), "already current");
+        assert!(sync_entry(&key.0, "MeetRec", None).unwrap());
+        assert_eq!(run_entry(&key.0, "MeetRec"), None);
+        assert!(!sync_entry(&key.0, "MeetRec", None).unwrap());
     }
 
     #[test]

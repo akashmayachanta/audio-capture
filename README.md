@@ -252,7 +252,8 @@ and builds (`-Dev` debug build, `-Test` run frontend and Rust unit tests first,
 `-Start` launch the tray afterwards, `-Force` kill a running MeetRec):
 
 ```
-.\build.ps1 -Test -Start     # backend\recorder\target\release\meetrec.exe
+.\build.ps1 -Test -Start     # backend\recorder\target\x86_64-pc-windows-msvc\release\meetrec.exe
+.\copy-release.bat           # copy that exe to C:\Drive\Software\Apps\audio-capture and start it there
 cd frontend; npm test        # UI unit tests (Vitest)
 cd frontend; npm run dev     # UI dev server (API calls need the exe, so mostly for styling)
 cd backend\recorder
@@ -274,10 +275,16 @@ window runs from the same exe, so changes to it also need a rebuild.
 .\build.ps1 -Start                          # LTO build: needs plenty of RAM, takes a few minutes; then starts the tray
 ```
 
-The "start with Windows" entry points at the exe you started it from, so it picks
-up new builds in the same place automatically. The build output moved to
-`backend\recorder\target\release\meetrec.exe`; if you used the old
-`target\release` exe, start the tray from the new exe and turn **Start with
-Windows** off and on once (save in between) to point the entry at the new path. Changing a default in `src/config.rs`
+The build always targets `x86_64-pc-windows-msvc` (`.cargo\config.toml`), so
+the exe is in `backend\recorder\target\x86_64-pc-windows-msvc\release\`. For
+daily use, `copy-release.bat` installs it in `C:\Drive\Software\Apps\audio-capture`:
+it stops the transcriber and every running MeetRec (an open recording is then
+finalized as "recovered"; quit from the tray first to avoid that), deletes the
+old exe there and the obsolete pre-target build folders (`target\`,
+`backend\recorder\target\release`, `…\debug`), copies the new exe, links
+`transcriber\` there to the repo's `backend\transcriber` (so **Start** in the
+window finds it), and starts the tray. With **Start with Windows** on, the tray
+points the sign-in entry at whichever exe it runs from on every start, so an
+entry left by an old build folder is corrected. Changing a default in `src/config.rs`
 doesn't change an existing `config.toml`, which keeps the value it already has.
 Edit that value in Settings.

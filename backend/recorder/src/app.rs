@@ -323,11 +323,11 @@ impl App {
 }
 
 fn sync_autostart(enabled: bool) {
-    if autostart::is_enabled() != enabled {
-        match autostart::set_enabled(enabled) {
-            Ok(()) => tracing::info!("start with Windows: {enabled}"),
-            Err(e) => tracing::warn!("updating autostart: {e:#}"),
-        }
+    // Also repoints an entry left by another copy of the exe (an old build folder).
+    match autostart::sync(enabled) {
+        Ok(true) => tracing::info!("start with Windows: {enabled}"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("updating autostart: {e:#}"),
     }
 }
 

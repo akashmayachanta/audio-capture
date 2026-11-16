@@ -10,9 +10,10 @@
     then runs cargo build in backend\recorder.
 
 .EXAMPLE
-    .\build.ps1                 # release build -> backend\recorder\target\release\meetrec.exe
+    .\build.ps1                 # release build -> backend\recorder\target\x86_64-pc-windows-msvc\release\meetrec.exe
     .\build.ps1 -Test -Start    # run unit tests, build, then start the tray
-    .\build.ps1 -Dev            # quick debug build -> backend\recorder\target\debug\meetrec.exe
+    .\build.ps1 -Dev            # quick debug build -> backend\recorder\target\x86_64-pc-windows-msvc\debug\meetrec.exe
+    .\copy-release.bat          # copy the release exe to C:\Drive\Software\Apps\audio-capture and start it
 
     If scripts are blocked: powershell -ExecutionPolicy Bypass -File .\build.ps1
 #>
@@ -123,7 +124,8 @@ if ($stale) { Invoke-Npm run build } else { Write-Host 'Frontend unchanged; skip
 Set-Location $crateDir
 
 $profileDir = if ($Dev) { 'debug' } else { 'release' }
-$exe = Join-Path $crateDir "target\$profileDir\meetrec.exe"
+# .cargo\config.toml sets [build] target, so cargo writes under target\<triple>\.
+$exe = Join-Path $crateDir "target\x86_64-pc-windows-msvc\$profileDir\meetrec.exe"
 
 $running = @(Get-Process meetrec -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
 if ($running.Count -gt 0) {

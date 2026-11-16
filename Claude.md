@@ -49,7 +49,14 @@ build.ps1               npm build, then cargo build in backend/recorder
   After changing any of these env vars, `cargo clean -p audiopus_sys`.
 - `.cargo/config.toml` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5` so libopus
   (built statically by `audiopus_sys`) configures under CMake 4.
-- In `backend/recorder`: `cargo build --release` → `target\release\meetrec.exe`.
+- `.cargo/config.toml` also sets `[build] target = "x86_64-pc-windows-msvc"`, so
+  output is under `target\x86_64-pc-windows-msvc\{debug,release}\`.
+- In `backend/recorder`: `cargo build --release` → `target\x86_64-pc-windows-msvc\release\meetrec.exe`.
+  `copy-release.bat` (repo root) installs it in `C:\Drive\Software\Apps\audio-capture`:
+  stops the transcriber (`/api/shutdown`, else kills the uv/python tree) and all
+  MeetRec processes, deletes the old exe + obsolete `target\`,
+  `backend\recorder\target\{release,debug}`, copies, junctions `transcriber\` to
+  the repo's, starts the tray.
   `.\build.ps1` wraps it: `npm ci` (when needed) + `npm run build` in `frontend/` (skipped when nothing in `frontend/` or `src/` is newer than `dist/index.html`),
   puts CMake on PATH (from PATH, or VS-bundled via vswhere), refuses if MeetRec runs from
   the output exe (`-Dev`, `-Test` = Vitest + `cargo test --lib`, `-Start`, `-Force`).
