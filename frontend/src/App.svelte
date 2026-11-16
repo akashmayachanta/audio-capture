@@ -71,6 +71,6 @@
   <!-- Both pages stay mounted: unsaved settings and the player survive switching tabs. -->
   <main class="relative min-h-0">
     <div class={['absolute inset-0', route !== 'recordings' && 'hidden']}><Recordings {tx} active={route === 'recordings'} /></div>
-    <div class={['absolute inset-0', route !== 'settings' && 'hidden']}><Settings {tx} /></div>
+    <div class={['absolute inset-0', route !== 'settings' && 'hidden']}><Settings {tx} active={route === 'settings'} /></div>
   </main>
 </div>

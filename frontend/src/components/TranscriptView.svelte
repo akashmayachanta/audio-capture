@@ -13,20 +13,39 @@
     time,
     playing,
     onseek,
-  }: { id: string; transcribed: boolean; version?: number | null; busy?: boolean; time: number; playing: boolean; onseek: (t: number) => void } = $props()
+    ondelete,
+  }: {
+    id: string
+    transcribed: boolean
+    version?: number | null
+    busy?: boolean
+    time: number
+    playing: boolean
+    onseek: (t: number) => void
+    ondelete: () => void
+  } = $props()
 
   let transcript = $state<Transcript | null>(null)
   let loadError = $state('')
   let filter = $state<'all' | 'me' | 'others'>('all')
   let rows: HTMLElement[] = $state([])
 
+  // The parent rebuilds the recording object on every poll, which reruns an
+  // effect reading the props directly; a derived only fires when its value changes.
+  const recId = $derived(id)
+  const fileVersion = $derived(version)
+  const has = $derived(transcribed)
+  let shownFor = ''
+
   // Reloads when the recording changes or its transcript file is rewritten (Redo).
   $effect(() => {
-    const want = id
-    void version
-    transcript = null
+    const want = recId
+    void fileVersion
     loadError = ''
-    if (!transcribed) return
+    // A redone transcript replaces the old one in place, without a blank in between.
+    if (!has || want !== shownFor) transcript = null
+    shownFor = want
+    if (!has) return
     local
       .transcript(want)
       .then((md) => {
@@ -82,16 +101,21 @@
   {/if}
   <div class="mt-5 mb-2 flex flex-wrap items-center justify-between gap-3">
     <div class="text-[12.5px] text-muted">{meta}</div>
-    <Segmented
-      small
-      label="Show"
-      bind:value={filter}
-      options={[
-        { value: 'all', label: 'Both' },
-        { value: 'me', label: 'Me' },
-        { value: 'others', label: 'Others' },
-      ]}
-    />
+    <div class="flex items-center gap-2">
+      <Segmented
+        small
+        label="Show"
+        bind:value={filter}
+        options={[
+          { value: 'all', label: 'Both' },
+          { value: 'me', label: 'Me' },
+          { value: 'others', label: 'Others' },
+        ]}
+      />
+      <button class="btn btn-sm hover:enabled:border-danger hover:enabled:text-danger" title="Delete this transcript (the recording stays)" disabled={busy} onclick={ondelete}>
+        <Icon name="trash" size={13} /> Delete
+      </button>
+    </div>
   </div>
   {#if segments.length === 0}
     <div class="py-12 text-center text-muted">No speech detected.</div>

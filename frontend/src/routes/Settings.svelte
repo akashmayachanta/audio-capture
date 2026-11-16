@@ -8,10 +8,11 @@
   import Toggle from '../components/Toggle.svelte'
   import { local, transcriber, type CaptureMode, type Config, type Device } from '../lib/api'
   import { joinTriggerApps, splitTriggerApps, type KnownApp } from '../lib/apps'
+  import { rebase } from '../lib/config'
   import { clampInt } from '../lib/numbers'
   import type { createTranscriber } from '../lib/transcriber.svelte'
 
-  let { tx }: { tx: ReturnType<typeof createTranscriber> } = $props()
+  let { tx, active = true }: { tx: ReturnType<typeof createTranscriber>; active?: boolean } = $props()
 
   let saved = $state<Config | null>(null)
   let form = $state<Config | null>(null)
@@ -48,6 +49,33 @@
     }
   })
 
+  /**
+   * Picks up what the tray menu (or an editor) wrote to config.toml since the form
+   * loaded, keeping unsaved edits. Without it Save would write the old values back.
+   */
+  async function sync() {
+    const fresh = (await local.getConfig()).config
+    if (!saved || !candidate) return
+    // $state.snapshot: structuredClone throws on reactive proxies.
+    const merged = rebase($state.snapshot(saved), $state.snapshot(candidate), fresh)
+    saved = fresh
+    form = merged
+    ;({ known, custom } = splitTriggerApps(merged.trigger_apps, knownApps))
+  }
+
+  onMount(() => {
+    const onFocus = () => void sync().catch(() => {})
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  })
+
+  // Coming back to the tab.
+  let wasActive = true // onMount does the first load
+  $effect(() => {
+    if (active && !wasActive) void sync().catch(() => {})
+    wasActive = active
+  })
+
   const candidate = $derived(
     form
       ? {
@@ -67,6 +95,7 @@
     saving = true
     saveError = ''
     try {
+      await sync()
       const r = await local.putConfig(candidate)
       adopt(r.config)
       justSaved = true
@@ -108,6 +137,8 @@
 
   const missing = (id: string, list: Device[]) => id !== '' && !list.some((d) => d.id === id)
   const t = $derived(tx.current)
+  // Loading another model frees the one a running transcription is using.
+  const jobsRunning = $derived((t.state?.jobs ?? []).some((j) => j.state === 'queued' || j.state === 'running'))
 
   const MODES: { value: CaptureMode; label: string }[] = [
     { value: 'both', label: 'Mic + system audio' },
@@ -245,7 +276,12 @@
             <p class="mt-1 text-[12.5px] text-muted">{m.description}</p>
             {#if e.active === m.id && e.error}<p class="mt-1 text-[12.5px] text-danger">{e.error}</p>{/if}
           </div>
-          <button class="btn btn-sm" disabled={!t.online || !!e.loading || e.loaded === m.id} onclick={() => loadModel(m.id)}>Load</button>
+          <button
+            class="btn btn-sm"
+            disabled={!t.online || !!e.loading || e.loaded === m.id || jobsRunning}
+            title={jobsRunning ? 'Wait for the running transcription to finish' : undefined}
+            onclick={() => loadModel(m.id)}>Load</button
+          >
         </div>
       {/each}
     </Card>

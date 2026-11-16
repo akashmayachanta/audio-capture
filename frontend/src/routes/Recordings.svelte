@@ -39,7 +39,14 @@
     void refresh()
     const onFocus = () => void refresh()
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
+    // A recording made while the window stays in front (hotkey, auto-record) shows up by itself.
+    const timer = setInterval(() => {
+      if (active && document.visibilityState === 'visible') void refresh()
+    }, 5000)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      clearInterval(timer)
+    }
   })
 
   // Back from Settings: the recordings folder may have changed.
@@ -71,7 +78,29 @@
     }
   }
 
-  const title = (r: NonNullable<typeof rec>) => [r.started || r.file, r.apps.join(', ')].filter(Boolean).join(' · ')
+  function deleteTranscript(id: string) {
+    if (!confirm('Delete this transcript? The recording is kept, and you can transcribe it again.')) return
+    void act(async () => {
+      await local.deleteTranscript(id)
+      await refresh()
+    })
+  }
+
+  function deleteRecording(id: string) {
+    const r = rows.find((x) => x.id === id)
+    const what = r ? [r.started || r.file, r.apps.join(', ')].filter(Boolean).join(' · ') : id
+    const extra = r?.transcribed ? ' and its transcript' : ''
+    if (!confirm(`Delete the recording ${what}${extra}? This cannot be undone.`)) return
+    void act(async () => {
+      try {
+        await local.deleteRecording(id)
+      } finally {
+        await refresh()
+      }
+    })
+  }
+
+  const title =(r: NonNullable<typeof rec>) => [r.started || r.file, r.apps.join(', ')].filter(Boolean).join(' · ')
 </script>
 
 <div class="grid h-full min-h-0 grid-cols-[280px_1fr] lg:grid-cols-[minmax(300px,360px)_1fr]">
@@ -124,6 +153,7 @@
           onselect={(id) => (selected = id)}
           ontranscribe={(id) => act(() => transcriber.transcribe(id))}
           oncancel={(jobId) => act(() => transcriber.cancel(jobId))}
+          ondelete={deleteRecording}
         />
       {/if}
     </div>
@@ -151,7 +181,7 @@
         transcribed={rec.transcribed}
         version={rec.transcript_mtime}
         busy={rec.job?.state === 'queued' || rec.job?.state === 'running'}
-        {time} {playing} onseek={(s) => player?.seek(s)} />
+        {time} {playing} onseek={(s) => player?.seek(s)} ondelete={() => deleteTranscript(rec.id)} />
     {:else if loaded}
       <div class="px-6 py-12 text-center text-muted">Select a recording.</div>
     {/if}

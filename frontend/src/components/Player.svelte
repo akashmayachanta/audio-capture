@@ -38,8 +38,11 @@
 
   // A new recording. Duration and position reset through the element's own
   // events when `src` changes; setting them here would race those events.
+  // Through a derived: the parent rebuilds the recording object on every poll,
+  // and reading `id` directly would cancel a drag on the seek bar each time.
+  const recId = $derived(id)
   $effect(() => {
-    void id
+    void recId
     error = ''
     scrub = null
   })

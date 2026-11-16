@@ -53,7 +53,12 @@ pub fn handle(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
             let list: Vec<_> = crate::recordings::list(&out).iter().map(|r| files::recording_json(&out, r)).collect();
             ok_json(json!({ "output_dir": out, "recordings": list }))
         }),
-        "transcript" => only(Method::GET, &|| transcript(host, req)),
+        "transcript" => match *m {
+            Method::GET => transcript(host, req),
+            Method::DELETE => delete_transcript(host, req),
+            _ => error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+        },
+        "recording" => only(Method::DELETE, &|| delete_recording(host, req)),
         "audio" => only(Method::GET, &|| audio(host, req)),
         "open-folder" => only(Method::POST, &|| open_folder(host, req.body())),
         "pick-folder" => only(Method::POST, &|| {
@@ -115,6 +120,29 @@ fn transcript(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
         Ok(bytes) => response(StatusCode::OK, "text/markdown; charset=utf-8", bytes),
         Err(_) => error(StatusCode::NOT_FOUND, "not transcribed yet"),
     }
+}
+
+/// Deletes the recording's `.md`; the recording and its sidecar stay.
+fn delete_transcript(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
+    let Some(opus) = recording(host, req) else { return not_found() };
+    match std::fs::remove_file(files::sibling(&opus, "md")) {
+        Ok(()) => ok_json(json!({})),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => error(StatusCode::NOT_FOUND, "not transcribed yet"),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not delete the transcript: {e}")),
+    }
+}
+
+/// Deletes the recording with its sidecar and transcript. The `.opus` goes
+/// first: if it is in use nothing is removed.
+fn delete_recording(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
+    let Some(opus) = recording(host, req) else { return not_found() };
+    if let Err(e) = std::fs::remove_file(&opus) {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not delete the recording: {e}"));
+    }
+    for ext in ["json", "md"] {
+        let _ = std::fs::remove_file(files::sibling(&opus, ext));
+    }
+    ok_json(json!({}))
 }
 
 fn audio(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
@@ -438,6 +466,68 @@ mod tests {
         assert_eq!(r.body(), b"# Transcript: x\n");
         let r = handle(&host, &req("GET", &format!("{BASE}/api/transcript?id=2026/10/todo.opus"), ""));
         assert_eq!(r.status(), 404);
+    }
+
+    #[test]
+    fn delete_transcript_removes_only_the_md() {
+        let host = FakeHost::new();
+        let opus = host.recording("2026/10/done.opus", b"OggS");
+        let md = opus.with_extension("md");
+        std::fs::write(&md, "# Transcript: x\n").unwrap();
+        std::fs::write(opus.with_extension("json"), "{}").unwrap();
+        let uri = format!("{BASE}/api/transcript?id=2026/10/done.opus");
+        assert_eq!(handle(&host, &req("DELETE", &uri, "")).status(), 200);
+        assert!(!md.exists());
+        assert!(opus.is_file() && opus.with_extension("json").is_file(), "the recording stays");
+        assert_eq!(handle(&host, &req("DELETE", &uri, "")).status(), 404, "nothing left to delete");
+        assert_eq!(handle(&host, &req("POST", &uri, "")).status(), 405);
+    }
+
+    #[test]
+    fn delete_recording_removes_it_with_its_sidecar_and_transcript() {
+        let host = FakeHost::new();
+        let opus = host.recording("2026/10/gone.opus", b"OggS");
+        std::fs::write(opus.with_extension("json"), "{}").unwrap();
+        std::fs::write(opus.with_extension("md"), "# Transcript: x\n").unwrap();
+        let other = host.recording("2026/10/kept.opus", b"OggS");
+        std::fs::write(other.with_extension("md"), "# Transcript: y\n").unwrap();
+        let uri = format!("{BASE}/api/recording?id=2026/10/gone.opus");
+        assert_eq!(handle(&host, &req("GET", &uri, "")).status(), 405);
+        assert_eq!(handle(&host, &req("DELETE", &uri, "")).status(), 200);
+        for ext in ["opus", "json", "md"] {
+            assert!(!opus.with_extension(ext).exists(), "{ext}");
+        }
+        assert!(other.is_file() && other.with_extension("md").is_file(), "other recordings stay");
+        assert_eq!(handle(&host, &req("DELETE", &uri, "")).status(), 404, "nothing left to delete");
+    }
+
+    #[test]
+    fn delete_recording_without_sidecar_or_transcript() {
+        let host = FakeHost::new();
+        let opus = host.recording("bare.opus", b"OggS");
+        assert_eq!(handle(&host, &req("DELETE", &format!("{BASE}/api/recording?id=bare.opus"), "")).status(), 200);
+        assert!(!opus.exists());
+    }
+
+    #[test]
+    fn delete_recording_rejects_escaping_ids() {
+        let host = FakeHost::new();
+        let secret = host.dir.path().join("secret.opus");
+        std::fs::write(&secret, b"x").unwrap();
+        let r = handle(&host, &req("DELETE", &format!("{BASE}/api/recording?id=..%2Fsecret.opus"), ""));
+        assert_eq!(r.status(), 404);
+        assert!(secret.is_file());
+    }
+
+    #[test]
+    fn delete_transcript_rejects_escaping_ids() {
+        let host = FakeHost::new();
+        std::fs::write(host.dir.path().join("secret.opus"), b"x").unwrap();
+        let md = host.dir.path().join("secret.md");
+        std::fs::write(&md, b"x").unwrap();
+        let r = handle(&host, &req("DELETE", &format!("{BASE}/api/transcript?id=..%2Fsecret.opus"), ""));
+        assert_eq!(r.status(), 404);
+        assert!(md.is_file());
     }
 
     #[test]

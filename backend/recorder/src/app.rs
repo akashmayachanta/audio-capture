@@ -252,11 +252,15 @@ impl App {
     fn feed(&mut self, input: Input) {
         tracing::debug!("input {input:?}");
         for action in self.controller.handle(input, Instant::now()) {
-            self.execute(action);
+            // A failed start drops what came with it (the "Recording ..." toast).
+            if !self.execute(action) {
+                break;
+            }
         }
     }
 
-    fn execute(&mut self, action: Action) {
+    /// False when the action failed and the rest of its batch should not run.
+    fn execute(&mut self, action: Action) -> bool {
         tracing::debug!("action {action:?}");
         match action {
             Action::Start { trigger, app } => match Recorder::start(&self.config, trigger, app) {
@@ -265,13 +269,21 @@ impl App {
                     tracing::error!("could not start recording: {e:#}");
                     self.notify(&format!("Could not start recording: {e}"));
                     self.feed(Input::ManualStop);
+                    return false;
                 }
             },
             Action::Stop { apply_min_duration } => {
                 if let Some(r) = self.recorder.take() {
                     let min = if apply_min_duration { self.config.min_duration_secs as f64 } else { 0.0 };
                     match r.stop(min) {
-                        Ok(Closed::Saved(p)) => tracing::info!("saved {}", p.display()),
+                        Ok(Closed::Saved(p)) => {
+                            tracing::info!("saved {}", p.display());
+                            // Manual recordings: confirm the stop too (auto ones end on their own).
+                            if !apply_min_duration {
+                                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                                self.notify(&format!("Recording saved: {name}"));
+                            }
+                        }
                         Ok(Closed::Discarded) => tracing::info!("discarded recording shorter than {min} s"),
                         Err(e) => {
                             tracing::error!("closing recording failed: {e:#}");
@@ -288,6 +300,7 @@ impl App {
             Action::AddApp(app) => self.with_recorder(|r| r.add_app(&app)),
             Action::Notify(msg) => self.notify(&msg),
         }
+        true
     }
 
     fn with_recorder(&self, f: impl FnOnce(&Recorder)) {

@@ -87,6 +87,9 @@ def create_app(s, engines, store, jobs=None, shutdown=lambda: None):
     def load(req: LoadRequest):
         if req.model not in {m["id"] for m in store.models()}:
             raise HTTPException(400, f"unknown model {req.model!r}")
+        # Loading frees the current model, which would fail the transcription using it.
+        if any(j["state"] in ("queued", "running") for j in jobs.snapshot()):
+            raise HTTPException(409, "a transcription is running; wait for it to finish or cancel it")
         engines.load_async(req.model)
         return engines.status()
 

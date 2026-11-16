@@ -10,6 +10,7 @@
     onselect,
     ontranscribe,
     oncancel,
+    ondelete,
   }: {
     rows: Row[]
     selected: string | null
@@ -17,6 +18,7 @@
     onselect: (id: string) => void
     ontranscribe: (id: string) => void
     oncancel: (jobId: number) => void
+    ondelete: (id: string) => void
   } = $props()
 
   const groups = $derived(groupByDay(rows, new Date()))
@@ -64,6 +66,14 @@
           {:else if canTranscribe && r.transcribed && r.id === selected}
             <button class="btn btn-sm border-transparent bg-transparent shadow-none" onclick={(e) => (e.stopPropagation(), ontranscribe(r.id))}>Redo</button>
           {/if}
+          <!-- Not while it is being transcribed: the transcriber has the file open. -->
+          <button
+            class="icon-btn ml-auto size-[26px] hover:enabled:text-danger"
+            title="Delete this recording"
+            aria-label="Delete this recording"
+            onclick={(e) => (e.stopPropagation(), ondelete(r.id))}
+            onkeydown={(e) => e.stopPropagation()}><Icon name="trash" size={15} /></button
+          >
         {/if}
       </div>
     </div>

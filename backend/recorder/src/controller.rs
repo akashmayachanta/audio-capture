@@ -105,7 +105,11 @@ impl Controller {
                 Some(at) if recording == Some(Trigger::Auto) && now.duration_since(at) >= self.grace => self.stop(),
                 _ => vec![],
             },
-            Input::ManualStart if recording.is_none() => self.start(Trigger::Manual, self.mic_app.clone()),
+            Input::ManualStart if recording.is_none() => {
+                let mut actions = self.start(Trigger::Manual, self.mic_app.clone());
+                actions.push(Action::Notify("Recording started".into()));
+                actions
+            }
             Input::ManualStop if recording.is_some() => self.stop(),
             Input::Suspend => {
                 // After resume the detector reports whoever holds the mic afresh.
@@ -130,11 +134,22 @@ impl Controller {
             Input::Marker if recording.is_some() => vec![Action::Marker],
             Input::DeviceChanged if recording.is_some() => vec![Action::RestartCapture],
             Input::AutoRecordChanged(on) => {
+                let turned_on = on && !self.auto_record;
                 self.auto_record = on;
-                if recording.is_none() {
-                    self.state = self.resting();
+                if recording.is_some() {
+                    return vec![];
                 }
-                vec![]
+                self.state = self.resting();
+                // Switched on mid-meeting: the detector only reports new mic holders,
+                // so nothing else would start this one.
+                match self.mic_app.clone() {
+                    Some(app) if turned_on => {
+                        let mut actions = self.start(Trigger::Auto, Some(app.clone()));
+                        actions.push(Action::Notify(format!("Recording {app} meeting")));
+                        actions
+                    }
+                    _ => vec![],
+                }
             }
             _ => vec![],
         }
@@ -188,7 +203,11 @@ mod tests {
     fn manual_start_and_stop() {
         let t = Instant::now();
         let mut c = Controller::new(false, GRACE);
-        assert_eq!(c.handle(Input::ManualStart, t), vec![Action::Start { trigger: Trigger::Manual, app: None }]);
+        // A hotkey gives no other sign that it worked, so a manual start says so.
+        assert_eq!(
+            c.handle(Input::ManualStart, t),
+            vec![Action::Start { trigger: Trigger::Manual, app: None }, Action::Notify("Recording started".into())]
+        );
         assert_eq!(c.state(), &rec(Trigger::Manual, None));
         assert_eq!(c.handle(Input::ManualStop, t), vec![Action::Stop { apply_min_duration: false }]);
         assert_eq!(c.state(), &State::Idle);
@@ -299,7 +318,31 @@ mod tests {
         let mut c = Controller::new(false, GRACE);
         c.handle(Input::MicInUse("Zoom".into()), t);
         assert_eq!(c.state(), &State::Idle, "auto-record is off");
-        assert_eq!(c.handle(Input::ManualStart, t), vec![Action::Start { trigger: Trigger::Manual, app: Some("Zoom".into()) }]);
+        assert_eq!(c.handle(Input::ManualStart, t)[0], Action::Start { trigger: Trigger::Manual, app: Some("Zoom".into()) });
+    }
+
+    #[test]
+    fn turning_auto_record_on_mid_meeting_starts_recording() {
+        let t = Instant::now();
+        let mut c = Controller::new(false, GRACE);
+        c.handle(Input::MicInUse("Teams".into()), t);
+        let actions = c.handle(Input::AutoRecordChanged(true), t);
+        assert_eq!(actions[0], Action::Start { trigger: Trigger::Auto, app: Some("Teams".into()) });
+        assert!(matches!(&actions[1], Action::Notify(m) if m.contains("Teams")), "{actions:?}");
+        assert_eq!(c.state(), &rec(Trigger::Auto, Some("Teams")));
+    }
+
+    #[test]
+    fn auto_record_on_does_not_start_without_a_meeting_or_when_already_on() {
+        let t = Instant::now();
+        let mut c = Controller::new(false, GRACE);
+        assert!(c.handle(Input::AutoRecordChanged(true), t).is_empty(), "nobody holds the mic");
+        assert_eq!(c.state(), &State::Armed);
+        // The user stopped an auto recording; re-sending "on" must not restart it.
+        c.handle(Input::MicInUse("Teams".into()), t);
+        c.handle(Input::ManualStop, t);
+        assert!(c.handle(Input::AutoRecordChanged(true), t).is_empty());
+        assert_eq!(c.state(), &State::Armed);
     }
 
     // ---- auto mode ----

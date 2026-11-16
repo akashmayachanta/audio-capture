@@ -77,6 +77,10 @@ export const local = {
     if (!r.ok) throw new ApiError(`HTTP ${r.status}`, r.status)
     return r.text()
   },
+  /** Deletes the transcript `.md`; the recording stays. */
+  deleteTranscript: (id: string) => call<object>(`/api/transcript?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** Deletes the recording with its sidecar and transcript. */
+  deleteRecording: (id: string) => call<object>(`/api/recording?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
   openFolder: (id?: string) => call<object>('/api/open-folder', send('POST', { id: id ?? null })),
   pickFolder: () => call<{ path: string | null }>('/api/pick-folder', send('POST', {})),
   /** Starts `uv run python -m app` in the transcriber folder (hidden; it outlives the window). */
