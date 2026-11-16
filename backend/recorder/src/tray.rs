@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::config::{CaptureMode, Config};
 use crate::controller::State;
@@ -43,6 +43,18 @@ pub const ICON_SIZE: u32 = 32;
 /// The MeetRec mark (`crate::icon`) in the state colour, RGBA.
 pub fn icon_rgba(kind: IconKind) -> Vec<u8> {
     crate::icon::render(ICON_SIZE, kind.rgb())
+}
+
+/// Double-clicking the icon opens the window (Recordings); the menu is on right-click.
+pub fn command_for_icon_event(event: &TrayIconEvent) -> Option<MenuCommand> {
+    match event {
+        TrayIconEvent::DoubleClick { button, .. } => double_click_command(*button),
+        _ => None,
+    }
+}
+
+fn double_click_command(button: MouseButton) -> Option<MenuCommand> {
+    (button == MouseButton::Left).then_some(MenuCommand::Recordings)
 }
 
 pub fn tooltip(state: &State, elapsed: Duration) -> String {
@@ -126,6 +138,9 @@ impl Tray {
         ])?;
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            // Left button is for double-click (open the window); a single left
+            // click would otherwise pop the menu up over it.
+            .with_menu_on_left_click(false)
             .with_tooltip("MeetRec")
             .with_icon(make_icon(IconKind::Idle)?)
             .build()?;
@@ -242,6 +257,12 @@ mod tests {
         assert_eq!(at(13, 16), [220, 40, 40, 255], "gap between bars");
         assert_eq!(at(16, 3), [220, 40, 40, 255], "above the wave");
         assert_eq!(at(0, 0)[3], 0, "corner is transparent");
+    }
+
+    #[test]
+    fn left_double_click_opens_the_window() {
+        assert_eq!(double_click_command(MouseButton::Left), Some(MenuCommand::Recordings));
+        assert_eq!(double_click_command(MouseButton::Right), None);
     }
 
     #[test]

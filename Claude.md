@@ -103,7 +103,7 @@ Paths below are under `backend/recorder/`.
 | `src/audio/device.rs` | endpoint lookup (falls back to default if chosen mic is not active), default-device change watcher |
 | `src/encode/opus_ogg.rs` | libopus multistream encoder (2 uncoupled mono streams, mapping family 1; mono = family 0) + Ogg writer, page flush every 1 s |
 | `src/detect/mic_usage.rs` | polls `HKCU\…\CapabilityAccessManager\ConsentStore\microphone`; in use = `LastUsedTimeStart > 0 && LastUsedTimeStop == 0`; excludes our own exe |
-| `src/tray.rs`, `src/hotkeys.rs` | tray icon/menu (`tray-icon`/`muda`), global hotkeys |
+| `src/tray.rs`, `src/hotkeys.rs` | tray icon/menu (`tray-icon`/`muda`; menu on right-click only, left double-click opens Recordings), global hotkeys |
 | `src/icon.rs` | the MeetRec mark (rounded square + white wave bars), dependency-free; tray (state colours), window icon, and `build.rs` (exe icon, via `#[path]`); the header SVG in `App.svelte` copies it |
 | `src/transcriber.rs` | `find_dir` (config `transcriber_dir`, else `transcriber/` or `backend/transcriber/` up from the exe); `Launcher` spawns `uv run python -m app` hidden (log `logs/transcriber.log`), `status()` = running / exit code + log tail |
 | `src/config.rs` | `config.toml` (serde defaults, sanitizing, mtime watcher) |

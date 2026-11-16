@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use tray_icon::menu::MenuEvent;
+use tray_icon::TrayIconEvent;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT,
     WM_QUIT,
@@ -98,6 +99,11 @@ impl App {
             }
             while let Ok(ev) = MenuEvent::receiver().try_recv() {
                 if let Some(cmd) = self.tray.command_for(ev.id()) {
+                    self.on_command(cmd);
+                }
+            }
+            while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+                if let Some(cmd) = crate::tray::command_for_icon_event(&ev) {
                     self.on_command(cmd);
                 }
             }
