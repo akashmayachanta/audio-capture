@@ -72,8 +72,10 @@ quick tap does nothing.
 
 - **Requirements**: the transcriber (see [Transcription](#transcription)) with
   a model loaded. If it is not running, the first dictation starts it and
-  waits up to 90 s; dictation never stops it. The tray menu has **Start / Stop
-  speech service** for doing it by hand. A dictation cuts in ahead of a running
+  waits up to 90 s (with the model loaded last); dictation never stops it. The
+  tray's **Speech service** submenu does it by hand: **Start with** a model
+  (which then becomes the default), switch the running service to another model
+  (the ticked one is active), or **Stop** it. A dictation cuts in ahead of a running
   meeting transcription, which then continues.
 - **Keys**: **Settings → Dictation** picks the key for each gesture (or Off).
   **Detect…** binds the next key you press. Keys a keyboard handles by itself

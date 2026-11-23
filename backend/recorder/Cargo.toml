@@ -44,6 +44,15 @@ lto = "thin"
 opt-level = "s"
 strip = true
 
+# Debug builds: full debug info for every dependency made the exe ~21 MB and
+# the link the slowest, most memory-hungry step of a rebuild. Our own code
+# keeps file:line in backtraces; dependencies get none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # libopus is a C build (cmake crate). At opt-level 0 the crate configures it as
 # CMake "Debug", which links the debug CRT (/MDd) that Rust doesn't use: the
 # test binary then fails with unresolved __imp__CrtDbgReportW. Optimizing it

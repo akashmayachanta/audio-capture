@@ -425,7 +425,7 @@ impl Dictation {
 
     fn ensure_server(&mut self, env: &Env) {
         if env.service == ServiceState::Down {
-            if let Err(e) = env.speech.start(env.transcriber_dir) {
+            if let Err(e) = env.speech.start(env.transcriber_dir, None) {
                 self.notices.push(e);
             }
         }

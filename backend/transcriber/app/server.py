@@ -2,6 +2,7 @@
 transcript status, loading a model and starting/cancelling transcriptions, and stopping the server.
 The window reads transcripts and audio from audcap.exe itself."""
 import logging
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,11 +34,13 @@ class CancelRequest(BaseModel):
 
 
 def build(settings, shutdown=lambda: None):
-    """The real wiring: SQLite store in the cache folder, and the model loaded
-    last (or settings.toml's) starts loading right away."""
+    """The real wiring: SQLite store in the cache folder, and the model the tray
+    asked for (`AUDCAP_TRANSCRIBER_MODEL`), else the one loaded last, else
+    settings.toml's, starts loading right away."""
     store = Store(settings.cache_root() / "transcriber.db", CATALOG)
     engines = EngineCache(settings, on_loaded=lambda model: store.set_pref("model", model))
-    if model := store.startup_model(settings.model):
+    requested = os.environ.get("AUDCAP_TRANSCRIBER_MODEL", "").strip() or None
+    if model := store.startup_model(settings.model, requested):
         engines.load_async(model)
     return create_app(settings, engines, store, shutdown=shutdown)
 
@@ -107,8 +110,15 @@ def create_app(s, engines, store, jobs=None, shutdown=lambda: None):
 
     @app.get("/api/health")
     def health():
-        """Cheap liveness check for the tray (state lists every recording)."""
-        return {"ok": True}
+        """Cheap liveness check for the tray (state lists every recording), with
+        the chosen model for its menu."""
+        st = engines.status()
+        return {
+            "ok": True,
+            "model": st["active"],
+            "loading": st["active"] is not None and st["loaded"] != st["active"] and not st["error"],
+            "failed": bool(st["error"]),
+        }
 
     @app.post("/api/dictate")
     async def dictate(request: Request):

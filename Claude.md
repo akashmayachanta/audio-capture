@@ -61,6 +61,11 @@ build.ps1               npm build, then cargo build in backend/recorder
   `.\build.ps1` wraps it: `npm ci` (when needed) + `npm run build` in `frontend/` (skipped when nothing in `frontend/` or `src/` is newer than `dist/index.html`),
   puts CMake on PATH (from PATH, or VS-bundled via vswhere), refuses if AudCap runs from
   the output exe (`-Dev`, `-Test` = Vitest + `cargo test --lib`, `-Start`, `-Force`).
+  It builds at normal priority with half the logical processors
+  (`CARGO_BUILD_JOBS` + `CMAKE_BUILD_PARALLEL_LEVEL`; `-Jobs N` overrides): all
+  cores made the machine stall. Plain `cargo` outside the script uses every core.
+- Dev profile: `debug = "line-tables-only"` for the crate, none for dependencies
+  (smaller exe, faster link).
 - `build.rs` generates the exe icon, embeds version info + a DPI-aware manifest
   (`assets/audcap.manifest`) via `winresource`, and stages `frontend/dist` into
   `$OUT_DIR/frontend` for `include_dir!` — or a one-line placeholder page with a
@@ -131,8 +136,8 @@ Paths below are under `backend/recorder/`.
 | `src/dictation/controller.rs` | **pure** dictation state machine (idle / hold / toggle / transcribing) → actions |
 | `src/dictation/segmenter.rs` | **pure** phrase cutter on 20 ms frames: a phrase ends after 0.6 s of silence (0.2 s padding kept), or at 15 s at the quietest frame of the last 3 s; `flush` gives the tail; `level_of` |
 | `src/dictation/capture.rs` | `encode_clip` (a phrase → its own small Opus clip); hands phrases to an optional channel that closes when the recording ends; mic → level meter + mono Opus clip `<output_dir>/dictation/YYYY/MM/YYYY-MM-DD_HHMMSS.opus` (`.part` while writing, no sidecar) |
-| `src/dictation/client.rs` | hand-written loopback HTTP client for the transcriber (`health`, `dictate`; no chunked replies); `AUDCAP_TRANSCRIBER_ADDR` overrides `127.0.0.1:8765` |
-| `src/dictation/service.rs` | `SpeechService`: launcher + health poller + stop plan; backs the tray's "Start/Stop speech service" item |
+| `src/dictation/client.rs` | hand-written loopback HTTP client for the transcriber (`health`, `status` (health + model), `load`, `dictate`, `shutdown`; no chunked replies); `AUDCAP_TRANSCRIBER_ADDR` overrides `127.0.0.1:8765` |
+| `src/dictation/service.rs` | `SpeechService`: launcher + health poller (active model, loading, failed) + stop plan; backs the tray's **Speech service** submenu (pure `menu_view`: "Start with <model>" when off, ticked active model + switch via `POST /api/load` when on, Stop). `MODELS` mirrors the transcriber's `CATALOG`. A tray start passes the model as `AUDCAP_TRANSCRIBER_MODEL`; dictation and the window start with the model loaded last |
 | `src/dictation/paste.rs` | plain-text clipboard → Ctrl+V, old text restored after ~500 ms; non-text clipboard → text typed with Unicode `SendInput`; elevated target → left on the clipboard + toast; `send_menu_mask_key` (VK 0xFF) |
 | `src/dictation/overlay_scene.rs`, `overlay.rs` | **pure** rendering of a round microphone badge (96 px at 100%; listening = voice-reactive halo and ripples, starting / transcribing = a light running round the rim, error = red flash; no text) and the Win32 layered window showing it |
 | `src/dictation/rawinput.rs` | Raw Input message-only window on its own thread → `Receiver<Stamped>`; `detect_next_key` for Settings |
@@ -190,10 +195,10 @@ Transcribe when the two folders differ.
 
 | File | Role |
 | ------ | ------ |
-| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`, `GET /api/health`, `POST /api/dictate` (Opus clip in the body → `{text}`; 409 no model chosen, 503 loading, 500 load failed, 400 bad/empty audio, 413 too large), `POST /api/shutdown` (`__main__` sets uvicorn `should_exit`, closes the engine, `os._exit`); Host-header check (DNS rebinding); CORS for `http://audcap.localhost` only |
+| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`, `GET /api/health` (`{ok, model, loading, failed}` for the tray), `POST /api/dictate` (Opus clip in the body → `{text}`; 409 no model chosen, 503 loading, 500 load failed, 400 bad/empty audio, 413 too large), `POST /api/shutdown` (`__main__` sets uvicorn `should_exit`, closes the engine, `os._exit`); Host-header check (DNS rebinding); CORS for `http://audcap.localhost` only |
 | `app/jobs.py` | one worker thread, queue, cancel; decode → chunk → engine → `<name>.md` |
 | `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4; `device` `auto`/`cpu`/`gpu`/`cuda`: `gpu` = encoder on Intel graphics via OpenVINO with inputs padded to full batches and 256-frame multiples so few shapes get compiled, `auto` falls back to CPU with a log warning) and `WhistleEngine` (`cactus-needle`, telemetry off; one model per process and ~2 cores each, so `workers` > 1 = a `ProcessPoolExecutor` of Whistles, `close()` terminates them); pinned HF revisions; `CATALOG`; `EngineCache` holds one model: `load_async` + `status()` for the header, jobs `get()` the active one |
-| `app/store.py` | SQLite `transcriber.db` in the cache folder: `models` (list shown in Settings, order from `CATALOG`; `enabled` hides one) and `prefs.model` (loaded last, reloaded at startup) |
+| `app/store.py` | SQLite `transcriber.db` in the cache folder: `models` (list shown in Settings, order from `CATALOG`; `enabled` hides one) and `prefs.model` (loaded last, reloaded at startup unless `AUDCAP_TRANSCRIBER_MODEL` names another) |
 | `app/bark_loader.py` | vendored `.bark` unpacker (CC-BY-4.0, see `BARK_NOTICE`); never exec downloaded code. `cached_state_dict` keeps the unpacked weights as `unpacked-<rev8>.safetensors` (fp16) next to `model.bark`; `load_openvino` exports the encoder once to `encoder-<rev8>.xml/.bin` and compiles it (blobs in `<cache>/ov_cache`), then replaces `model.encoder.forward`; OpenVINO telemetry module blocked; cache files written as temp + rename |
 | `app/dictation.py` | one dictation clip → text with the active engine; cuts in between a running job's pieces (engines take `turn=`) |
 | `app/audio.py` | PyAV decode of the Ogg Opus (family 1 multistream works) → 16 kHz per speaker |

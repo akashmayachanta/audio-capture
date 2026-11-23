@@ -1,11 +1,14 @@
 //! The speech service (the Python transcriber) as the tray sees it: its state,
-//! the tray menu item that follows it, and starting/stopping it. Dictation
-//! starts it too, but never stops it.
+//! the tray submenu that follows it (start with a model, switch model, stop),
+//! and starting/stopping it. Dictation starts it too (with the model loaded
+//! last), but never stops it.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+pub use super::client::Health;
 use super::client::Client;
 use crate::transcriber::{self, Launcher};
 
@@ -35,14 +38,59 @@ impl ServiceState {
     }
 }
 
-/// The tray menu item's text and whether it can be clicked.
-pub fn menu_item(state: ServiceState) -> (&'static str, bool) {
-    match state {
-        ServiceState::Down => ("Start speech service", true),
-        ServiceState::Starting => ("Starting speech service…", false),
-        ServiceState::Up => ("Stop speech service", true),
-        ServiceState::Stopping => ("Stopping speech service…", false),
-    }
+/// The models the tray offers: (id, label), as in the transcriber's `CATALOG`
+/// (`backend/transcriber/app/engines.py`), in the same order.
+pub const MODELS: &[(&str, &str)] = &[("whistle", "Cactus Whistle"), ("bark", "Underdog Bark 3.0")];
+
+fn label(model: &str) -> &str {
+    MODELS.iter().find(|(id, _)| *id == model).map_or(model, |(_, l)| l)
+}
+
+/// One model entry of the tray's speech service submenu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelItem {
+    pub text: String,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
+/// The tray's speech service submenu: its title, one item per `MODELS` entry, and Stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuView {
+    pub title: String,
+    pub models: Vec<ModelItem>,
+    pub stop_enabled: bool,
+}
+
+/// `requested`: the model the tray last started the service with (shown while it
+/// starts). `health`: the last answer of a running server (its model wins).
+pub fn menu_view(state: ServiceState, requested: Option<&str>, health: &Health) -> MenuView {
+    use ServiceState::*;
+    let shown = match state {
+        Down => None,
+        Starting => requested,
+        Up | Stopping => health.model.as_deref(),
+    };
+    let title = match state {
+        Down => "off".to_string(),
+        Starting => "starting…".to_string(),
+        Stopping => "stopping…".to_string(),
+        Up => match shown {
+            None => "on, no model".to_string(),
+            Some(m) if health.failed => format!("{} failed to load", label(m)),
+            Some(m) if health.loading => format!("loading {}…", label(m)),
+            Some(m) => label(m).to_string(),
+        },
+    };
+    let models = MODELS
+        .iter()
+        .map(|(id, l)| ModelItem {
+            text: if state == Down { format!("Start with {l}") } else { l.to_string() },
+            enabled: matches!(state, Down | Up),
+            checked: shown == Some(*id),
+        })
+        .collect();
+    MenuView { title: format!("Speech service ({title})"), models, stop_enabled: matches!(state, Starting | Up) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,9 +119,14 @@ pub fn still_stopping(since: Option<Instant>, api_up: bool, now: Instant) -> boo
 /// and a thread that keeps asking the API whether it is up.
 pub struct SpeechService {
     launcher: Launcher,
-    polls: Receiver<bool>,
-    api_up: bool,
+    polls: Receiver<Option<Health>>,
+    /// The last poll's answer; `None` = the API is not up.
+    health: Option<Health>,
     stopping: Option<Instant>,
+    /// The model the last start from this tray asked for.
+    requested: Mutex<Option<String>>,
+    errors_tx: Sender<String>,
+    errors: Receiver<String>,
 }
 
 impl SpeechService {
@@ -83,37 +136,84 @@ impl SpeechService {
             .name("speech-service-poll".into())
             .spawn(move || {
                 let client = Client::local();
-                while tx.send(client.health()).is_ok() {
+                while tx.send(client.status()).is_ok() {
                     std::thread::sleep(POLL_EVERY);
                 }
             })
             .expect("spawn the speech service poller");
-        Self { launcher: Launcher::new(log_path), polls, api_up: false, stopping: None }
+        let (errors_tx, errors) = mpsc::channel();
+        Self {
+            launcher: Launcher::new(log_path),
+            polls,
+            health: None,
+            stopping: None,
+            requested: Mutex::new(None),
+            errors_tx,
+            errors,
+        }
+    }
+
+    fn api_up(&self) -> bool {
+        self.health.is_some()
     }
 
     /// Takes in the latest poll results; call often (it is cheap).
     pub fn poll(&mut self, now: Instant) -> ServiceState {
-        while let Ok(up) = self.polls.try_recv() {
-            self.api_up = up;
+        while let Ok(health) = self.polls.try_recv() {
+            self.health = health;
         }
-        if !still_stopping(self.stopping, self.api_up, now) {
+        if !still_stopping(self.stopping, self.api_up(), now) {
             self.stopping = None;
         }
-        ServiceState::derive(self.api_up, self.launcher.status().running, self.stopping.is_some())
+        ServiceState::derive(self.api_up(), self.launcher.status().running, self.stopping.is_some())
+    }
+
+    /// The tray submenu for `state` (from the last `poll`).
+    pub fn menu(&self, state: ServiceState) -> MenuView {
+        let requested = self.requested.lock().unwrap().clone();
+        menu_view(state, requested.as_deref(), &self.health.clone().unwrap_or_default())
+    }
+
+    /// Messages for the user from background requests (a model switch that failed).
+    pub fn take_errors(&self) -> Vec<String> {
+        self.errors.try_iter().collect()
     }
 
     /// Starts it (a second start while it runs does nothing). `configured_dir` is
-    /// the config's `transcriber_dir`; empty = look next to the exe.
-    pub fn start(&self, configured_dir: &Path) -> Result<(), String> {
+    /// the config's `transcriber_dir`; empty = look next to the exe. `model`: load
+    /// this one (it becomes the one loaded next time too); `None` = the one loaded last.
+    pub fn start(&self, configured_dir: &Path, model: Option<&str>) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let dir = transcriber::find_dir(configured_dir, &exe).ok_or_else(|| {
             "The speech service folder was not found next to audcap.exe. Set transcriber_dir in config.toml.".to_string()
         })?;
-        self.launcher.start(&dir)
+        self.launcher.start(&dir, model)?;
+        *self.requested.lock().unwrap() = model.map(str::to_string);
+        Ok(())
+    }
+
+    /// Switches the running service to `model`. The request runs on a thread;
+    /// a failure comes back through `take_errors`.
+    pub fn load(&mut self, model: &str) -> Result<(), String> {
+        let Some(health) = self.health.as_mut() else {
+            return Err("The speech service is not running.".into());
+        };
+        if health.model.as_deref() == Some(model) && !health.failed {
+            return Ok(());
+        }
+        // Shown right away; the next poll brings the server's view.
+        *health = Health { model: Some(model.to_string()), loading: true, failed: false };
+        let (model, errors) = (model.to_string(), self.errors_tx.clone());
+        std::thread::spawn(move || {
+            if let Err(e) = Client::local().load(&model) {
+                let _ = errors.send(format!("Couldn't switch the speech model: {e}"));
+            }
+        });
+        Ok(())
     }
 
     pub fn stop(&mut self, now: Instant) -> Result<(), String> {
-        match stop_plan(self.api_up, self.launcher.status().running) {
+        match stop_plan(self.api_up(), self.launcher.status().running) {
             StopPlan::Shutdown => {
                 self.stopping = Some(now);
                 // The request can take a few seconds; keep it off the UI thread.
@@ -150,12 +250,58 @@ mod tests {
         assert_eq!(ServiceState::derive(false, true, true), Down, "it has stopped answering: done");
     }
 
+    fn item(text: &str, enabled: bool, checked: bool) -> ModelItem {
+        ModelItem { text: text.into(), enabled, checked }
+    }
+
+    fn health(model: Option<&str>, loading: bool, failed: bool) -> Health {
+        Health { model: model.map(String::from), loading, failed }
+    }
+
     #[test]
-    fn menu_item_text_and_enabled() {
-        assert_eq!(menu_item(ServiceState::Down), ("Start speech service", true));
-        assert_eq!(menu_item(ServiceState::Starting), ("Starting speech service…", false));
-        assert_eq!(menu_item(ServiceState::Up), ("Stop speech service", true));
-        assert_eq!(menu_item(ServiceState::Stopping), ("Stopping speech service…", false));
+    fn off_offers_to_start_with_each_model() {
+        let v = menu_view(ServiceState::Down, None, &Health::default());
+        assert_eq!(v.title, "Speech service (off)");
+        assert_eq!(
+            v.models,
+            vec![item("Start with Cactus Whistle", true, false), item("Start with Underdog Bark 3.0", true, false)]
+        );
+        assert!(!v.stop_enabled);
+    }
+
+    #[test]
+    fn starting_ticks_the_requested_model_and_can_be_stopped() {
+        let v = menu_view(ServiceState::Starting, Some("bark"), &Health::default());
+        assert_eq!(v.title, "Speech service (starting…)");
+        assert_eq!(v.models, vec![item("Cactus Whistle", false, false), item("Underdog Bark 3.0", false, true)]);
+        assert!(v.stop_enabled, "a start that hangs can be ended");
+        let v = menu_view(ServiceState::Starting, None, &Health::default());
+        assert!(v.models.iter().all(|m| !m.checked), "started without a choice: the last model, unknown here");
+    }
+
+    #[test]
+    fn running_ticks_the_active_model_and_allows_switching() {
+        let v = menu_view(ServiceState::Up, Some("bark"), &health(Some("whistle"), false, false));
+        assert_eq!(v.title, "Speech service (Cactus Whistle)", "the server's model wins over the requested one");
+        assert_eq!(v.models, vec![item("Cactus Whistle", true, true), item("Underdog Bark 3.0", true, false)]);
+        assert!(v.stop_enabled);
+    }
+
+    #[test]
+    fn running_titles_show_loading_failure_and_no_model() {
+        let title = |h: Health| menu_view(ServiceState::Up, None, &h).title;
+        assert_eq!(title(health(Some("bark"), true, false)), "Speech service (loading Underdog Bark 3.0…)");
+        assert_eq!(title(health(Some("bark"), false, true)), "Speech service (Underdog Bark 3.0 failed to load)");
+        assert_eq!(title(health(None, false, false)), "Speech service (on, no model)");
+        assert_eq!(title(health(Some("tiny"), false, false)), "Speech service (tiny)", "a model this build doesn't list");
+    }
+
+    #[test]
+    fn stopping_locks_everything() {
+        let v = menu_view(ServiceState::Stopping, None, &health(Some("whistle"), false, false));
+        assert_eq!(v.title, "Speech service (stopping…)");
+        assert!(v.models.iter().all(|m| !m.enabled));
+        assert!(!v.stop_enabled);
     }
 
     #[test]
@@ -191,7 +337,7 @@ mod tests {
         };
 
         assert_eq!(s.poll(Instant::now()), ServiceState::Down);
-        s.start(&transcriber).unwrap();
+        s.start(&transcriber, None).unwrap();
         assert_eq!(s.poll(Instant::now()), ServiceState::Starting);
         wait_for(&mut s, ServiceState::Up, 90);
         s.stop(Instant::now()).unwrap();

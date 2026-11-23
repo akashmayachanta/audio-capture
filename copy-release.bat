@@ -55,4 +55,4 @@ rem the repo's, so the copy shares its Python environment and settings.toml.
 if not exist "%DEST%\transcriber" mklink /J "%DEST%\transcriber" "%REPO%backend\transcriber" >nul && echo Linked %DEST%\transcriber to the repo's transcriber.
 
 start "" "%DEST%\audcap.exe"
-echo Started AudCap from %DEST%. Start the transcriber from its window (Settings - Transcription).
+echo Started AudCap from %DEST%. Start the transcriber from the tray (Speech service - Start with ...) or its window (Settings - Transcription).

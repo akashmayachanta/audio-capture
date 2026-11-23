@@ -42,7 +42,7 @@ pub struct App {
     recorder: Option<Recorder>,
     tray: Tray,
     hotkeys: Hotkeys,
-    /// The transcriber ("speech service"): the tray menu item and, later, dictation.
+    /// The transcriber ("speech service"): the tray submenu and dictation.
     speech: SpeechService,
     /// Hold or double-tap a key to dictate into the focused field.
     dictation: Dictation,
@@ -154,7 +154,10 @@ impl App {
             self.tray.update(self.controller.state(), elapsed);
             let now = Instant::now();
             let service = self.speech.poll(now);
-            self.tray.set_service(service);
+            self.tray.set_service(self.speech.menu(service));
+            for message in self.speech.take_errors() {
+                self.notify(&message);
+            }
             let env = dictation::Env { speech: &self.speech, service, transcriber_dir: &self.config.transcriber_dir };
             let notices = self.dictation.poll(now, &env);
             for message in notices {
@@ -215,15 +218,23 @@ impl App {
                 self.config.capture_mode = mode;
                 self.save_config();
             }
-            MenuCommand::SpeechService => {
-                let now = Instant::now();
-                let result = match self.speech.poll(now) {
-                    ServiceState::Down => self.speech.start(&self.config.transcriber_dir),
-                    ServiceState::Up => self.speech.stop(now),
+            MenuCommand::SpeechModel(model) => {
+                let result = match self.speech.poll(Instant::now()) {
+                    ServiceState::Down => self.speech.start(&self.config.transcriber_dir, Some(model)),
+                    ServiceState::Up => self.speech.load(model),
                     ServiceState::Starting | ServiceState::Stopping => Ok(()),
                 };
                 if let Err(e) = result {
                     self.notify(&e);
+                }
+                self.tray.invalidate_service();
+            }
+            MenuCommand::StopSpeech => {
+                let now = Instant::now();
+                if matches!(self.speech.poll(now), ServiceState::Up | ServiceState::Starting) {
+                    if let Err(e) = self.speech.stop(now) {
+                        self.notify(&e);
+                    }
                 }
             }
             MenuCommand::OpenFolder => {

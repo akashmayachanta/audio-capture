@@ -75,7 +75,7 @@ impl Host for WindowHost {
     }
 
     fn start_transcriber(&self, dir: &Path) -> Result<(), String> {
-        self.transcriber.start(dir)
+        self.transcriber.start(dir, None)
     }
 
     fn transcriber_status(&self) -> crate::transcriber::LaunchStatus {

@@ -13,6 +13,7 @@
     .\build.ps1                 # release build -> backend\recorder\target\x86_64-pc-windows-msvc\release\audcap.exe
     .\build.ps1 -Test -Start    # run unit tests, build, then start the tray
     .\build.ps1 -Dev            # quick debug build -> backend\recorder\target\x86_64-pc-windows-msvc\debug\audcap.exe
+    .\build.ps1 -Jobs 4         # fewer cores (default: half the logical processors)
     .\copy-release.bat          # copy the release exe to C:\Drive\Software\Apps\audio-capture and start it
 
     If scripts are blocked: powershell -ExecutionPolicy Bypass -File .\build.ps1
@@ -27,7 +28,10 @@ param(
     # then finalized as "recovered" on next start; prefer tray menu -> Quit.
     [switch]$Force,
     # Start the tray from the new exe when done.
-    [switch]$Start
+    [switch]$Start,
+    # Parallel jobs for cargo, rustc and the libopus C build. 0 = CARGO_BUILD_JOBS
+    # if set, else half the logical processors (all of them made the machine stall).
+    [int]$Jobs = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +41,16 @@ $frontendDir = Join-Path $PSScriptRoot 'frontend'
 # The script changes folders; put the caller back where they were, even on failure.
 Push-Location
 try {
+
+if ($Jobs -le 0) {
+    $Jobs = if ($env:CARGO_BUILD_JOBS -as [int]) { [int]$env:CARGO_BUILD_JOBS }
+            else { [Math]::Max(1, [int][Math]::Floor([Environment]::ProcessorCount / 2)) }
+}
+# cargo hands these out as jobserver tokens to rustc (also its LTO/codegen threads)
+# and to the cmake crate (NUM_JOBS); CMAKE_BUILD_PARALLEL_LEVEL caps Ninja directly too.
+$env:CARGO_BUILD_JOBS = "$Jobs"
+$env:CMAKE_BUILD_PARALLEL_LEVEL = "$Jobs"
+Write-Host "Using $Jobs of $([Environment]::ProcessorCount) logical processors"
 
 function Find-CMake {
     $cmd = Get-Command cmake -ErrorAction SilentlyContinue

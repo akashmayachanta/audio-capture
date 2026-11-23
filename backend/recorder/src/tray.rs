@@ -9,7 +9,7 @@ use tray_icon::{Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::config::{CaptureMode, Config};
 use crate::controller::State;
-use crate::dictation::service::{self, ServiceState};
+use crate::dictation::service::{self, MenuView};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconKind {
@@ -83,8 +83,11 @@ pub enum MenuCommand {
     Marker,
     ToggleAuto,
     Mode(CaptureMode),
-    /// Start or stop the speech (transcriber) service.
-    SpeechService,
+    /// A model in the speech service submenu: start the service with it, or
+    /// switch the running one to it (an id from `service::MODELS`).
+    SpeechModel(&'static str),
+    /// Stop the speech (transcriber) service.
+    StopSpeech,
     OpenFolder,
     Recordings,
     Settings,
@@ -101,8 +104,11 @@ pub struct Tray {
     marker: MenuItem,
     auto: CheckMenuItem,
     modes: [(CaptureMode, CheckMenuItem); 3],
-    speech: MenuItem,
-    service: Option<ServiceState>,
+    speech: Submenu,
+    speech_models: Vec<(&'static str, CheckMenuItem)>,
+    speech_stop: MenuItem,
+    /// What the speech submenu shows now; `None` = re-apply on the next `set_service`.
+    speech_view: Option<MenuView>,
     open_folder: MenuItem,
     recordings: MenuItem,
     settings: MenuItem,
@@ -122,7 +128,14 @@ impl Tray {
             (CaptureMode::Both, CheckMenuItem::new("Microphone + system", true, false, None)),
         ];
         let capture = Submenu::with_items("Capture", true, &[&modes[0].1, &modes[1].1, &modes[2].1])?;
-        let speech = MenuItem::new(service::menu_item(ServiceState::Down).0, true, None);
+        let speech_models: Vec<(&'static str, CheckMenuItem)> =
+            service::MODELS.iter().map(|(id, label)| (*id, CheckMenuItem::new(*label, true, false, None))).collect();
+        let speech_stop = MenuItem::new("Stop speech service", false, None);
+        let speech = Submenu::new("Speech service", true);
+        for (_, item) in &speech_models {
+            speech.append(item)?;
+        }
+        speech.append_items(&[&PredefinedMenuItem::separator(), &speech_stop])?;
         let open_folder = MenuItem::new("Open recordings folder", true, None);
         let recordings = MenuItem::new("Recordings…", true, None);
         let settings = MenuItem::new("Settings…", true, None);
@@ -163,7 +176,9 @@ impl Tray {
             auto,
             modes,
             speech,
-            service: None,
+            speech_models,
+            speech_stop,
+            speech_view: None,
             open_folder,
             recordings,
             settings,
@@ -171,14 +186,24 @@ impl Tray {
         })
     }
 
-    /// Shows the speech service's state in its menu item. Cheap when unchanged.
-    pub fn set_service(&mut self, state: ServiceState) {
-        if self.service != Some(state) {
-            self.service = Some(state);
-            let (text, enabled) = service::menu_item(state);
-            self.speech.set_text(text);
-            self.speech.set_enabled(enabled);
+    /// Shows the speech service's state in its submenu. Cheap when unchanged.
+    pub fn set_service(&mut self, view: MenuView) {
+        if self.speech_view.as_ref() == Some(&view) {
+            return;
         }
+        self.speech.set_text(&view.title);
+        for ((_, item), m) in self.speech_models.iter().zip(&view.models) {
+            item.set_text(&m.text);
+            item.set_enabled(m.enabled);
+            item.set_checked(m.checked);
+        }
+        self.speech_stop.set_enabled(view.stop_enabled);
+        self.speech_view = Some(view);
+    }
+
+    /// Check items toggle themselves on click: makes the next `set_service` re-apply its view.
+    pub fn invalidate_service(&mut self) {
+        self.speech_view = None;
     }
 
     pub fn command_for(&self, id: &MenuId) -> Option<MenuCommand> {
@@ -193,8 +218,10 @@ impl Tray {
             Some(MenuCommand::Marker)
         } else if is(self.auto.id()) {
             Some(MenuCommand::ToggleAuto)
-        } else if is(self.speech.id()) {
-            Some(MenuCommand::SpeechService)
+        } else if is(self.speech_stop.id()) {
+            Some(MenuCommand::StopSpeech)
+        } else if let Some((model, _)) = self.speech_models.iter().find(|(_, item)| is(item.id())) {
+            Some(MenuCommand::SpeechModel(model))
         } else if is(self.open_folder.id()) {
             Some(MenuCommand::OpenFolder)
         } else if is(self.recordings.id()) {

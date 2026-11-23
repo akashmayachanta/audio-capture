@@ -1,5 +1,5 @@
 //! A minimal HTTP/1.1 client for the local transcriber (`127.0.0.1:8765`):
-//! `GET /api/health`, `POST /api/dictate`, `POST /api/shutdown`. Loopback only,
+//! `GET /api/health`, `POST /api/load`, `POST /api/dictate`, `POST /api/shutdown`. Loopback only,
 //! one request per connection (`Connection: close`), so no library is needed.
 
 use std::io::{ErrorKind, Read, Write};
@@ -22,6 +22,16 @@ pub enum DictateError {
     Failed(String),
     /// The caller set the cancel flag.
     Cancelled,
+}
+
+/// What `GET /api/health` says about the model (all empty from servers older than this).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Health {
+    /// The model chosen last (loaded or loading); `None` = none chosen yet.
+    pub model: Option<String>,
+    pub loading: bool,
+    /// Loading `model` failed.
+    pub failed: bool,
 }
 
 fn local_addr(overridden: Option<String>) -> String {
@@ -60,6 +70,37 @@ impl Client {
     /// The API answers `GET /api/health`.
     pub fn health(&self) -> bool {
         matches!(self.request("GET", "/api/health", None, &[], Duration::from_secs(2), None), Ok(r) if r.status == 200)
+    }
+
+    /// `GET /api/health` with what it says about the model; `None` = not up.
+    pub fn status(&self) -> Option<Health> {
+        let reply = self.request("GET", "/api/health", None, &[], Duration::from_secs(2), None).ok()?;
+        if reply.status != 200 {
+            return None;
+        }
+        let json: serde_json::Value = serde_json::from_slice(&reply.body).unwrap_or_default();
+        Some(Health {
+            model: json["model"].as_str().map(str::to_string),
+            loading: json["loading"].as_bool().unwrap_or(false),
+            failed: json["failed"].as_bool().unwrap_or(false),
+        })
+    }
+
+    /// `POST /api/load`: switches the running server to `model` (it loads in the background).
+    pub fn load(&self, model: &str) -> Result<(), String> {
+        let body = serde_json::json!({ "model": model }).to_string();
+        let reply = match self.request("POST", "/api/load", Some("application/json"), body.as_bytes(), Duration::from_secs(5), None) {
+            Ok(r) => r,
+            Err(Failure::Unreachable) => return Err("the speech service is not running".into()),
+            Err(Failure::TimedOut) => return Err("the speech service did not answer".into()),
+            Err(Failure::Io(m)) => return Err(m),
+            Err(Failure::Cancelled) => return Err("cancelled".into()),
+        };
+        if reply.status == 200 {
+            return Ok(());
+        }
+        let json: Option<serde_json::Value> = serde_json::from_slice(&reply.body).ok();
+        Err(json.and_then(|j| j["detail"].as_str().map(str::to_string)).unwrap_or_else(|| format!("HTTP {}", reply.status)))
     }
 
     /// `POST /api/shutdown`: true when the server said it is stopping.
@@ -264,6 +305,35 @@ mod tests {
         let (addr, _) = stub("404 Not Found", "{}");
         assert!(!Client::new(&addr).health());
         assert!(!Client::new(&closed_port()).health());
+    }
+
+    #[test]
+    fn status_reads_the_active_model_from_health() {
+        let (addr, _) = stub("200 OK", r#"{"ok":true,"model":"bark","loading":true,"failed":false}"#);
+        assert_eq!(
+            Client::new(&addr).status(),
+            Some(Health { model: Some("bark".into()), loading: true, failed: false })
+        );
+        let (addr, _) = stub("200 OK", r#"{"ok":true}"#);
+        assert_eq!(Client::new(&addr).status(), Some(Health::default()), "an older server");
+        let (addr, _) = stub("200 OK", r#"{"ok":true,"model":null,"loading":false,"failed":true}"#);
+        assert_eq!(Client::new(&addr).status(), Some(Health { model: None, loading: false, failed: true }));
+        let (addr, _) = stub("500 Internal Server Error", "{}");
+        assert_eq!(Client::new(&addr).status(), None);
+        assert_eq!(Client::new(&closed_port()).status(), None);
+    }
+
+    #[test]
+    fn load_posts_the_model_and_reports_the_detail() {
+        let (addr, seen) = stub("200 OK", r#"{"active":"bark"}"#);
+        assert_eq!(Client::new(&addr).load("bark"), Ok(()));
+        let req = String::from_utf8_lossy(&seen.recv().unwrap()).to_string();
+        assert!(req.starts_with("POST /api/load HTTP/1.1\r\n"), "{req}");
+        assert!(req.to_ascii_lowercase().contains("content-type: application/json\r\n"), "{req}");
+        assert!(req.ends_with(r#"{"model":"bark"}"#), "{req}");
+        let (addr, _) = stub("409 Conflict", r#"{"detail":"a transcription is running"}"#);
+        assert_eq!(Client::new(&addr).load("bark"), Err("a transcription is running".into()));
+        assert!(Client::new(&closed_port()).load("bark").is_err());
     }
 
     #[test]

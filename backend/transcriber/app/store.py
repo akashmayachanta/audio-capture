@@ -67,10 +67,11 @@ class Store:
             c.execute("INSERT INTO prefs (key, value) VALUES (?, ?) "
                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
 
-    def startup_model(self, fallback):
-        """The model loaded last, else `fallback` (settings.toml), else the first listed."""
+    def startup_model(self, fallback, requested=None):
+        """`requested` (the tray's choice), else the model loaded last, else
+        `fallback` (settings.toml), else the first listed."""
         ids = [m["id"] for m in self.models()]
-        for candidate in (self.get_pref("model"), fallback):
+        for candidate in (requested, self.get_pref("model"), fallback):
             if candidate in ids:
                 return candidate
         return ids[0] if ids else None

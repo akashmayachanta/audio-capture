@@ -40,6 +40,8 @@ pub struct Launcher {
     child: Mutex<Option<Child>>,
 }
 
+/// Read by the transcriber's `build()`: the model to load at startup.
+const MODEL_ENV: &str = "AUDCAP_TRANSCRIBER_MODEL";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
@@ -49,8 +51,9 @@ impl Launcher {
     }
 
     /// Runs `uv run python -m app` in `dir`, hidden, output to the log file.
-    /// A second Start while the first process still runs does nothing.
-    pub fn start(&self, dir: &Path) -> Result<(), String> {
+    /// `model`: the model to load at startup (`AUDCAP_TRANSCRIBER_MODEL`); `None`
+    /// = the one it loaded last. A second Start while the first process still runs does nothing.
+    pub fn start(&self, dir: &Path, model: Option<&str>) -> Result<(), String> {
         let mut child = self.child.lock().unwrap();
         if let Some(c) = child.as_mut() {
             if matches!(c.try_wait(), Ok(None)) {
@@ -63,10 +66,13 @@ impl Launcher {
         let log = File::create(&self.log_path).map_err(|e| format!("could not write {}: {e}", self.log_path.display()))?;
         let err = log.try_clone().map_err(|e| e.to_string())?;
         use std::os::windows::process::CommandExt;
-        let spawned = Command::new("uv")
-            .args(["run", "python", "-m", "app"])
-            .current_dir(dir)
-            .env("PYTHONUNBUFFERED", "1")
+        let mut cmd = Command::new("uv");
+        cmd.args(["run", "python", "-m", "app"]).current_dir(dir).env("PYTHONUNBUFFERED", "1");
+        match model {
+            Some(m) => cmd.env(MODEL_ENV, m),
+            None => cmd.env_remove(MODEL_ENV),
+        };
+        let spawned = cmd
             .stdin(Stdio::null())
             .stdout(log)
             .stderr(err)
