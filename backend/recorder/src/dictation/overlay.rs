@@ -53,7 +53,7 @@ impl Overlay {
     pub fn new() -> Result<Overlay> {
         let ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
         // "STATIC" is a built-in class: no window class of our own to register.
-        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(ex.0), w!("STATIC"), w!("MeetRec dictation"), WS_POPUP, 0, 0, 1, 1, None, None, None, None)? };
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(ex.0), w!("STATIC"), w!("AudCap dictation"), WS_POPUP, 0, 0, 1, 1, None, None, None, None)? };
         let mem_dc = unsafe { CreateCompatibleDC(None) };
         if mem_dc.is_invalid() {
             unsafe { DestroyWindow(hwnd).ok() };

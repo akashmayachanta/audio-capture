@@ -1,18 +1,18 @@
 <#
 .SYNOPSIS
-    Builds meetrec.exe (the Svelte app in frontend\ is embedded in it).
+    Builds audcap.exe (the Svelte app in frontend\ is embedded in it).
 
 .DESCRIPTION
     Builds the frontend with npm (frontend\dist), puts the CMake that ships with
     the Visual Studio C++ build tools on PATH (libopus is built with it; not
     needed when LIBOPUS_LIB_DIR points at a prebuilt opus.lib), refuses to build
-    while MeetRec is running from the output folder (Windows locks the exe),
+    while AudCap is running from the output folder (Windows locks the exe),
     then runs cargo build in backend\recorder.
 
 .EXAMPLE
-    .\build.ps1                 # release build -> backend\recorder\target\x86_64-pc-windows-msvc\release\meetrec.exe
+    .\build.ps1                 # release build -> backend\recorder\target\x86_64-pc-windows-msvc\release\audcap.exe
     .\build.ps1 -Test -Start    # run unit tests, build, then start the tray
-    .\build.ps1 -Dev            # quick debug build -> backend\recorder\target\x86_64-pc-windows-msvc\debug\meetrec.exe
+    .\build.ps1 -Dev            # quick debug build -> backend\recorder\target\x86_64-pc-windows-msvc\debug\audcap.exe
     .\copy-release.bat          # copy the release exe to C:\Drive\Software\Apps\audio-capture and start it
 
     If scripts are blocked: powershell -ExecutionPolicy Bypass -File .\build.ps1
@@ -23,7 +23,7 @@ param(
     [switch]$Dev,
     # Run the frontend tests and `cargo test --lib` first; stop if they fail.
     [switch]$Test,
-    # Kill running MeetRec processes instead of stopping. An open recording is
+    # Kill running AudCap processes instead of stopping. An open recording is
     # then finalized as "recovered" on next start; prefer tray menu -> Quit.
     [switch]$Force,
     # Start the tray from the new exe when done.
@@ -111,7 +111,7 @@ if (-not (Test-Path $modules) -or (Get-Item $lock).LastWriteTime -gt (Get-Item $
 }
 if ($Test) { Invoke-Npm test }
 # Rebuild dist only when a frontend input is newer than it. A rebuild rewrites
-# every file in dist, which makes cargo recompile and relink meetrec even when
+# every file in dist, which makes cargo recompile and relink audcap even when
 # nothing changed. Delete frontend\dist to force it.
 $stamp = Join-Path $frontendDir 'dist\index.html'
 $stale = -not (Test-Path $stamp)
@@ -125,14 +125,14 @@ Set-Location $crateDir
 
 $profileDir = if ($Dev) { 'debug' } else { 'release' }
 # .cargo\config.toml sets [build] target, so cargo writes under target\<triple>\.
-$exe = Join-Path $crateDir "target\x86_64-pc-windows-msvc\$profileDir\meetrec.exe"
+$exe = Join-Path $crateDir "target\x86_64-pc-windows-msvc\$profileDir\audcap.exe"
 
-$running = @(Get-Process meetrec -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+$running = @(Get-Process audcap -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
 if ($running.Count -gt 0) {
     if (-not $Force) {
-        throw "MeetRec is running from $exe, which locks the file. Quit it from the tray menu (or pass -Force)."
+        throw "AudCap is running from $exe, which locks the file. Quit it from the tray menu (or pass -Force)."
     }
-    Write-Warning 'Killing running MeetRec processes.'
+    Write-Warning 'Killing running AudCap processes.'
     $running | Stop-Process -Force
     $running | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
 }
@@ -152,7 +152,7 @@ Write-Host ("Built {0} ({1:N1} MB) in {2:mm\:ss}" -f $exe, $size, $sw.Elapsed) -
 
 if ($Start) {
     Start-Process $exe
-    Write-Host 'Started MeetRec.'
+    Write-Host 'Started AudCap.'
 }
 } finally {
     Pop-Location

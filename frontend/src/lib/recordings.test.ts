@@ -36,7 +36,7 @@ describe('mergeRecordings', () => {
 
 describe('sameFolder', () => {
   it('ignores case, slash direction and a trailing slash', () => {
-    expect(sameFolder('C:\\Users\\A\\Documents\\MeetRec\\', 'c:/users/a/documents/meetrec')).toBe(true)
+    expect(sameFolder('C:\\Users\\A\\Documents\\AudCap\\', 'c:/users/a/documents/audcap')).toBe(true)
   })
   it('tells different folders apart', () => {
     expect(sameFolder('C:\\Rec', 'C:\\Rec2')).toBe(false)

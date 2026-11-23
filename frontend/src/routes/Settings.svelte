@@ -295,7 +295,7 @@
       </Card>
 
       <Card title="Startup">
-        <Toggle label="Start MeetRec when I sign in to Windows" bind:checked={form.start_with_windows} />
+        <Toggle label="Start AudCap when I sign in to Windows" bind:checked={form.start_with_windows} />
       </Card>
     {/if}
 

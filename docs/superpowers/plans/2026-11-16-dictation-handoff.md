@@ -47,13 +47,13 @@ Last full run (2026-11-17, after Task 14): `cargo test --lib` 256 passed, 8 igno
 - The user wants to bind Fn if the keyboard reports it; v1 only reads keyboard Raw Input, so Detect says "no key detected" for keyboards that hide Fn.
 
 ### Task 15
-- Update `CLAUDE.md` (layout table rows for `src/dictation/*`, Config section `[dictation]`, transcriber routes `/api/dictate`, `/api/health`, the `MEETREC_TRANSCRIBER_ADDR` env var) and `README.md` (Dictation section: keys, requirements, audio folder, tray item).
+- Update `CLAUDE.md` (layout table rows for `src/dictation/*`, Config section `[dictation]`, transcriber routes `/api/dictate`, `/api/health`, the `AUDCAP_TRANSCRIBER_ADDR` env var) and `README.md` (Dictation section: keys, requirements, audio folder, tray item).
 - Run `.\build.ps1 -Test` and the manual checklist below.
 - Whole-branch review by a fresh reviewer (the plan's Review Focus list), then fix Critical/Important findings test-first.
 - Delete the ledger file when done.
 
 ## Manual checklist (nothing below has been done in the real tray app)
-1. Rebuild, restart the tray (the user's tray runs the **installed** exe at `C:\Drive\Software\Apps\audio-capture\meetrec.exe`; use `copy-release.bat`).
+1. Rebuild, restart the tray (the user's tray runs the **installed** exe at `C:\Drive\Software\Apps\audio-capture\audcap.exe`; use `copy-release.bat`).
 2. Notepad: hold Right Alt, speak, release → text pasted; overlay appears ~150 ms after pressing, reacts to the voice.
 3. After a hold in Notepad/Explorer, check the Alt **menu bar does not activate** (the code sends an unassigned key, VK 0xFF, when the hold is confirmed; untested). If it does, rework `Dictation::on_gesture` / `paste::send_menu_mask_key`.
 4. Double-tap → listening; double-tap again → pasted. The first tap may flash a menu bar in some apps.
@@ -76,7 +76,7 @@ Modified: `lib.rs`, `Cargo.toml` (windows features: DataExchange, Memory, Keyboa
 - **Overlay has no text:** messages ("No speech heard", errors) go to toasts; the overlay only changes colour/animation. This differs from the spec's "short messages in the overlay". Cost: no text on the overlay.
 - **Non-text clipboard is typed over:** if the clipboard holds anything besides plain text (image, files, rich text) the text is typed with Unicode `SendInput` and the clipboard is untouched. Otherwise Ctrl+V, then the old text is restored after ~500 ms unless the clipboard changed meanwhile; history/cloud-exclusion formats are set. Elevated target windows → text left on the clipboard + toast.
 - **Hand-written loopback HTTP client** (`client.rs`) instead of `ureq`; chunked replies unsupported (uvicorn JSON replies use Content-Length; verified live).
-- **`MEETREC_TRANSCRIBER_ADDR`** env var overrides `127.0.0.1:8765` for scratch runs.
+- **`AUDCAP_TRANSCRIBER_ADDR`** env var overrides `127.0.0.1:8765` for scratch runs.
 - **Transcriber:** engines take `turn=` (a context-manager factory) per piece/batch so a dictation cuts in between pieces; `/api/dictate` returns 500 if the model failed to load, 503 while loading, 409 if none chosen. Dictation uses `min_speech_secs=0.15`.
 - **Controller extras:** `Hold+TapDiscarded` → discard + hide; `Hold+DoubleTap` → Toggle; late transcript results after Esc are ignored; max length ends listening and transcribes.
 - **Gesture extras:** other keys already held block a press; key-ups missing for >10 s expire; auto-repeat ignored; the fake AltGr Ctrl (make code 0x21D) and VK 0xFF are ignored.
@@ -88,8 +88,8 @@ Modified: `lib.rs`, `Cargo.toml` (windows features: DataExchange, Memory, Keyboa
 
 ## Environment notes and gotchas
 - **Build env on this machine:** portable MSVC + Ninja, no admin. Use `.\build.ps1` (from PowerShell) or, for quick cargo runs, set `CMAKE_GENERATOR=Ninja`, `CFLAGS=/FS`, `RC_PATH=<rc.exe on PATH>` first (cmake from `uv tool install cmake`). Plain `cargo test` without these fails in `audiopus_sys`. My helper `cg.ps1` was in the session scratchpad and is gone; recreate it if wanted.
-- **Do not run a second `meetrec.exe` (even debug, even with `MEETREC_CONFIG`):** the user's installed tray holds the single-instance mutex and is usually running, and `App::new` runs `autostart::sync(config.start_with_windows)`, which **rewrites or deletes the user's real HKCU `Run\MeetRec` entry** whatever the scratch config says. The scratch config does not isolate the registry (a real hole in CLAUDE.md's advice). To test glue without the tray, drive `Dictation` from an `#[ignore]` test (it never touches the registry).
-- **The user's transcriber may be running on 8765.** Never stop it. For live checks use a scratch server: a settings.toml with `port = 8799`, a scratch `recordings_dir`, a scratch `cache_dir` containing a copy of `%LOCALAPPDATA%\MeetRec\transcriber\models\whistle`, and env `MEETREC_TRANSCRIBER_SETTINGS=<that file>` + `MEETREC_TRANSCRIBER_ADDR=127.0.0.1:8799`. Test clips were made with Windows SAPI + PyAV (`libopus` encoder works in the transcriber venv).
+- **Do not run a second `audcap.exe` (even debug, even with `AUDCAP_CONFIG`):** the user's installed tray holds the single-instance mutex and is usually running, and `App::new` runs `autostart::sync(config.start_with_windows)`, which **rewrites or deletes the user's real HKCU `Run\AudCap` entry** whatever the scratch config says. The scratch config does not isolate the registry (a real hole in CLAUDE.md's advice). To test glue without the tray, drive `Dictation` from an `#[ignore]` test (it never touches the registry).
+- **The user's transcriber may be running on 8765.** Never stop it. For live checks use a scratch server: a settings.toml with `port = 8799`, a scratch `recordings_dir`, a scratch `cache_dir` containing a copy of `%LOCALAPPDATA%\AudCap\transcriber\models\whistle`, and env `AUDCAP_TRANSCRIBER_SETTINGS=<that file>` + `AUDCAP_TRANSCRIBER_ADDR=127.0.0.1:8799`. Test clips were made with Windows SAPI + PyAV (`libopus` encoder works in the transcriber venv).
 - **Live tests overwrite the clipboard** and inject keys into the foreground window (`#[ignore]`d tests: `dictation::paste`, `dictation::rawinput`, `dictation::overlay::demo_every_phase`, `dictation::capture::records_a_second_from_the_mic`, `dictation::service::start_and_stop_the_real_service`). Save the clipboard first, run them only when the user agrees. Run ignored tests as `cargo test --lib <filter> -- --ignored --nocapture`.
 - The paste live tests take the foreground with `AttachThreadInput`; they refuse to paste if the scratch edit box cannot get the foreground.
 

@@ -1,10 +1,10 @@
-# MeetRec: one Svelte app, frontend/backend split — design
+# AudCap: one Svelte app, frontend/backend split — design
 
 Status: draft for approval (2026-11-16). Not committed (repo rule: the user commits).
 
 ## Intent
 
-The egui window (`meetrec.exe --settings` / `--recordings`) looks dated, and the
+The egui window (`audcap.exe --settings` / `--recordings`) looks dated, and the
 transcriber has its own separate page at `http://127.0.0.1:8765/` with a second
 recordings list and a second player. Replace both with **one modern-looking
 Svelte app** shown in a native window, and reorganize the repo into
@@ -40,7 +40,7 @@ transcriber, which becomes an optional, API-only service.
   not running.
 - Needing Node/npm at runtime, or the page loading anything from the internet.
 - Touching the user's real config/recordings in tests or live runs
-  (`MEETREC_CONFIG`, `MEETREC_TRANSCRIBER_SETTINGS` scratch paths).
+  (`AUDCAP_CONFIG`, `AUDCAP_TRANSCRIBER_SETTINGS` scratch paths).
 
 ## Constraints
 
@@ -77,7 +77,7 @@ and one writer (Python `markdown.py`).
 frontend/                    Svelte 5 + Vite + TypeScript (SPA, no SvelteKit)
   package.json, vite.config.ts, src/…   →  builds to frontend/dist/
 backend/
-  recorder/                  the Rust crate → meetrec.exe
+  recorder/                  the Rust crate → audcap.exe
     Cargo.toml, Cargo.lock, build.rs, src/, assets/
   transcriber/               the Python uv project (moved from transcriber/), API only
 .cargo/config.toml           stays at the repo root (cargo finds it from below)
@@ -88,12 +88,12 @@ docs/, README.md, CLAUDE.md  updated paths
 
 ## Backend: the window process (`backend/recorder`)
 
-- `meetrec.exe --settings` / `--recordings` (same mutex `Local\MeetRec.Settings`)
+- `audcap.exe --settings` / `--recordings` (same mutex `Local\AudCap.Settings`)
   opens a **tao** window with a **wry** WebView. Starts on the matching page
   (`#/settings` or `#/recordings`). Resizable, default ~1100×720, min ~760×520.
   The tray menu items keep launching these args unchanged.
-- WebView2 user data folder: `%LOCALAPPDATA%\MeetRec\webview` (not next to the exe).
-- Custom protocol `meetrec` (WebView2 exposes it as `http://meetrec.localhost/`):
+- WebView2 user data folder: `%LOCALAPPDATA%\AudCap\webview` (not next to the exe).
+- Custom protocol `audcap` (WebView2 exposes it as `http://audcap.localhost/`):
   - `GET /…` — files from `frontend/dist`, embedded in the exe at build time
     (`include_dir`). If `dist/` is missing at build time, `build.rs` emits a
     warning and embeds a one-line placeholder page, so `cargo test --lib` and
@@ -128,7 +128,7 @@ docs/, README.md, CLAUDE.md  updated paths
 - API-only: delete `GET /` and `app/static/`; delete `GET /api/audio` and
   `GET /api/transcript` (the exe serves both now). `run.bat` stops opening a
   browser.
-- CORS: allow origin `http://meetrec.localhost` (GET/POST, `Content-Type`).
+- CORS: allow origin `http://audcap.localhost` (GET/POST, `Content-Type`).
   The Host-header check stays.
 - `/api/state`, `/api/load`, `/api/transcribe`, `/api/cancel` unchanged.
   Recording ids are already relative POSIX paths, so the page joins the two
@@ -160,7 +160,7 @@ Layout sketch:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ ● MeetRec    Recordings  Settings          Transcription: Bark ready │
+│ ● AudCap    Recordings  Settings          Transcription: Bark ready │
 ├───────────────────────┬──────────────────────────────────────────────┤
 │ 🔍 (non-goal)  ⟳  📁  │ 2026-11-14 10:15 · Teams                     │
 │ ┌───────────────────┐ │ 42:10 · auto · transcribed                   │

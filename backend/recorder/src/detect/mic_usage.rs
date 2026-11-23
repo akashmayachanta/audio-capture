@@ -138,7 +138,7 @@ pub fn spawn_detector(tx: Sender<BTreeSet<String>>) {
     let own_exe = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "meetrec.exe".into());
+        .unwrap_or_else(|| "audcap.exe".into());
     let spawned = std::thread::Builder::new().name("mic-detector".into()).spawn(move || {
         let mut last: Option<BTreeSet<String>> = None;
         loop {
@@ -208,13 +208,13 @@ mod tests {
             pk("MSTeams_8wekyb3d8bbwe", 0, 0),
             pk("91750D7E.Slack_8she8kybcnzg4", 134368317567963836, 0),
         ];
-        assert_eq!(active_holders(&entries, "meetrec.exe"), set(&["Slack", "Zoom"]));
+        assert_eq!(active_holders(&entries, "audcap.exe"), set(&["Slack", "Zoom"]));
     }
 
     #[test]
     fn our_own_exe_is_ignored() {
-        let entries = vec![np("C:#Drive#Vault#audio-capture#target#release#MeetRec.exe", 134368317567963836, 0)];
-        assert!(active_holders(&entries, "meetrec.exe").is_empty());
+        let entries = vec![np("C:#Drive#Vault#audio-capture#target#release#AudCap.exe", 134368317567963836, 0)];
+        assert!(active_holders(&entries, "audcap.exe").is_empty());
     }
 
     #[test]

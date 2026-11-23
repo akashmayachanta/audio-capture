@@ -1,11 +1,11 @@
-"""`settings.toml` next to this package, plus where MeetRec keeps its recordings."""
+"""`settings.toml` next to this package, plus where AudCap keeps its recordings."""
 import os
 import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SETTINGS_FILE = Path(os.environ.get("MEETREC_TRANSCRIBER_SETTINGS", ROOT / "settings.toml"))
+SETTINGS_FILE = Path(os.environ.get("AUDCAP_TRANSCRIBER_SETTINGS", ROOT / "settings.toml"))
 MODELS = ("bark", "whistle")
 
 
@@ -21,7 +21,7 @@ class Settings:
     port: int = 8765
 
     def recordings_root(self):
-        return Path(self.recordings_dir) if self.recordings_dir else meetrec_output_dir()
+        return Path(self.recordings_dir) if self.recordings_dir else audcap_output_dir()
 
     def whistle_workers(self):
         """Whistle processes run side by side; each uses about 2 cores. 0 = auto:
@@ -34,7 +34,7 @@ class Settings:
     def cache_root(self):
         if self.cache_dir:
             return Path(self.cache_dir)
-        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MeetRec" / "transcriber"
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AudCap" / "transcriber"
 
 
 def load(path=SETTINGS_FILE):
@@ -52,19 +52,19 @@ def load(path=SETTINGS_FILE):
     return s
 
 
-def meetrec_config_path():
-    if env := os.environ.get("MEETREC_CONFIG"):
+def audcap_config_path():
+    if env := os.environ.get("AUDCAP_CONFIG"):
         return Path(env)
-    return Path(os.environ.get("APPDATA", Path.home())) / "MeetRec" / "config.toml"
+    return Path(os.environ.get("APPDATA", Path.home())) / "AudCap" / "config.toml"
 
 
-def meetrec_output_dir(config_path=None):
-    """MeetRec's `output_dir`, or its default (Documents\\MeetRec)."""
+def audcap_output_dir(config_path=None):
+    """AudCap's `output_dir`, or its default (Documents\\AudCap)."""
     try:
-        with open(config_path or meetrec_config_path(), "rb") as f:
+        with open(config_path or audcap_config_path(), "rb") as f:
             out = tomllib.load(f).get("output_dir")
         if out:
             return Path(out)
     except (OSError, tomllib.TOMLDecodeError):
         pass
-    return Path.home() / "Documents" / "MeetRec"
+    return Path.home() / "Documents" / "AudCap"

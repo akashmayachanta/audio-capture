@@ -5,7 +5,7 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 use winreg::RegKey;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const VALUE: &str = "MeetRec";
+const VALUE: &str = "AudCap";
 
 /// Makes the Run entry match `enabled` for the running exe, also when it
 /// exists but names another copy (e.g. an old build folder). True if it changed.
@@ -62,36 +62,36 @@ mod tests {
     }
 
     fn scratch() -> ScratchKey {
-        ScratchKey(format!(r"Software\MeetRecTest-{}", uuid::Uuid::new_v4()))
+        ScratchKey(format!(r"Software\AudCapTest-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
     fn entry_can_be_added_and_removed() {
         let key = scratch();
-        assert_eq!(run_entry(&key.0, "MeetRec"), None);
-        set_run_entry(&key.0, "MeetRec", Some(r#""C:\Apps\meetrec.exe""#)).unwrap();
-        assert_eq!(run_entry(&key.0, "MeetRec").as_deref(), Some(r#""C:\Apps\meetrec.exe""#));
-        set_run_entry(&key.0, "MeetRec", None).unwrap();
-        assert_eq!(run_entry(&key.0, "MeetRec"), None);
+        assert_eq!(run_entry(&key.0, "AudCap"), None);
+        set_run_entry(&key.0, "AudCap", Some(r#""C:\Apps\audcap.exe""#)).unwrap();
+        assert_eq!(run_entry(&key.0, "AudCap").as_deref(), Some(r#""C:\Apps\audcap.exe""#));
+        set_run_entry(&key.0, "AudCap", None).unwrap();
+        assert_eq!(run_entry(&key.0, "AudCap"), None);
     }
 
     #[test]
     fn sync_replaces_a_stale_path_and_leaves_a_current_one() {
         let key = scratch();
-        let old = r#""C:\Old\target\release\meetrec.exe""#;
-        let new = r#""C:\New\backend\recorder\target\release\meetrec.exe""#;
-        set_run_entry(&key.0, "MeetRec", Some(old)).unwrap();
-        assert!(sync_entry(&key.0, "MeetRec", Some(new)).unwrap(), "stale path is rewritten");
-        assert_eq!(run_entry(&key.0, "MeetRec").as_deref(), Some(new));
-        assert!(!sync_entry(&key.0, "MeetRec", Some(new)).unwrap(), "already current");
-        assert!(sync_entry(&key.0, "MeetRec", None).unwrap());
-        assert_eq!(run_entry(&key.0, "MeetRec"), None);
-        assert!(!sync_entry(&key.0, "MeetRec", None).unwrap());
+        let old = r#""C:\Old\target\release\audcap.exe""#;
+        let new = r#""C:\New\backend\recorder\target\release\audcap.exe""#;
+        set_run_entry(&key.0, "AudCap", Some(old)).unwrap();
+        assert!(sync_entry(&key.0, "AudCap", Some(new)).unwrap(), "stale path is rewritten");
+        assert_eq!(run_entry(&key.0, "AudCap").as_deref(), Some(new));
+        assert!(!sync_entry(&key.0, "AudCap", Some(new)).unwrap(), "already current");
+        assert!(sync_entry(&key.0, "AudCap", None).unwrap());
+        assert_eq!(run_entry(&key.0, "AudCap"), None);
+        assert!(!sync_entry(&key.0, "AudCap", None).unwrap());
     }
 
     #[test]
     fn removing_a_missing_entry_is_fine() {
         let key = scratch();
-        set_run_entry(&key.0, "MeetRec", None).unwrap();
+        set_run_entry(&key.0, "AudCap", None).unwrap();
     }
 }

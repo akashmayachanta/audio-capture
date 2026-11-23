@@ -1,4 +1,4 @@
-# MeetRec
+# AudCap
 
 A small Windows tray app that records meetings to files: **your microphone on the
 left channel, system audio (everyone else) on the right**. A separate
@@ -16,7 +16,7 @@ diarization.
 
 ## Using it
 
-Run `meetrec.exe`. The tray icon shows the state:
+Run `audcap.exe`. The tray icon shows the state:
 
 | Icon  | State                                   |
 |-------|-----------------------------------------|
@@ -33,7 +33,7 @@ Run `meetrec.exe`. The tray icon shows the state:
 | Ctrl+Alt+M | add marker      |
 
 A toast appears when an auto recording starts. **Recordings…** and
-**Settings…** in the tray menu open the MeetRec window (`meetrec.exe
+**Settings…** in the tray menu open the AudCap window (`audcap.exe
 --recordings` / `--settings`, one window at a time). It follows Windows' light
 or dark mode.
 
@@ -101,13 +101,13 @@ quick tap does nothing.
 
 Manual, on-device speech-to-text in an optional local API
 (`backend\transcriber\`, Python + FastAPI, set up with
-[uv](https://docs.astral.sh/uv/)). It has no page of its own: the MeetRec window
-is its UI. `meetrec.exe` only records, and nothing is transcribed by itself.
+[uv](https://docs.astral.sh/uv/)). It has no page of its own: the AudCap window
+is its UI. `audcap.exe` only records, and nothing is transcribed by itself.
 
 Start and stop it with the **Start** / **Stop** button in **Settings →
-Transcription** (also on the Recordings page while it is offline). `meetrec.exe`
+Transcription** (also on the Recordings page while it is offline). `audcap.exe`
 runs `uv run python -m app` in the transcriber folder, hidden, logging to
-`%APPDATA%\MeetRec\logs\transcriber.log`; the server keeps running after the
+`%APPDATA%\AudCap\logs\transcriber.log`; the server keeps running after the
 window closes. The folder is found next to the exe or in the repo
 (`backend\transcriber`); set `transcriber_dir` in `config.toml` otherwise. The
 first start installs the Python environment and can take a few minutes. By hand:
@@ -118,10 +118,10 @@ uv sync                      # once: Python 3.11, PyTorch (CPU), OpenVINO, model
 uv run python -m app         # API on http://127.0.0.1:8765/
 ```
 
-(or `backend\transcriber\run.bat`). While it runs, the MeetRec window shows **Transcribe**
+(or `backend\transcriber\run.bat`). While it runs, the AudCap window shows **Transcribe**
 beside each recording (**Redo** on one that has a transcript, **Cancel** while
 it runs). One job runs at a time; more clicks queue up. The transcriber must
-read the same folder MeetRec saves to; if its `recordings_dir` points
+read the same folder AudCap saves to; if its `recordings_dir` points
 elsewhere, the window says so and hides Transcribe.
 
 **Model**: the window's header shows which model is loaded (or loading, or
@@ -164,7 +164,7 @@ multi-threaded through PyTorch (one thread per physical core by default).
 
 **Settings**: `backend\transcriber\settings.toml` (recordings folder, default model,
 Bark device, Whistle language, Whistle worker processes, cache folder, port). Models are cached in
-`%LOCALAPPDATA%\MeetRec\transcriber` (plus the Whistle engine DLL in
+`%LOCALAPPDATA%\AudCap\transcriber` (plus the Whistle engine DLL in
 `~\.cache\cactus-needle`). `transcriber.db` there (SQLite) holds the model
 list the Settings dialog shows (`models` table; set `enabled = 0` to hide one)
 and the model loaded last (`prefs`).
@@ -198,7 +198,7 @@ Apache-2.0 (Cactus Compute). Each transcript names the model it came from.
 - Stereo files use two **uncoupled** Opus streams (channel mapping family 1).
   The encoder never blends left and right. Windows Media Player can't decode
   this layout and plays only the mic, so it sounds muffled and the others are
-  missing. Use the MeetRec window, VLC or ffmpeg instead.
+  missing. Use the AudCap window, VLC or ffmpeg instead.
 - An Ogg page is flushed every second. After a crash, the leftover `.part` files
   are finalized on the next start with `"status": "recovered"`.
 - Auto recordings shorter than `min_duration_secs` (default 30 s) are discarded.
@@ -227,14 +227,14 @@ To split the channels for transcription:
 
 ## Config
 
-`%APPDATA%\MeetRec\config.toml` (override the path with `MEETREC_CONFIG`). All
+`%APPDATA%\AudCap\config.toml` (override the path with `AUDCAP_CONFIG`). All
 fields are optional:
 
 ```toml
 capture_mode = "both"          # both | mic | system
 mic_device = ""                # endpoint id; empty = Windows default
 system_device = ""             # speakers/headset to record "others" from; empty = Windows default
-output_dir = "C:\\Users\\me\\Documents\\MeetRec"
+output_dir = "C:\\Users\\me\\Documents\\AudCap"
 bitrate_kbps = 24              # per channel
 auto_record = true
 trigger_apps = ["Teams", "Zoom", "Webex", "Slack", "Chrome", "Edge", "Firefox"]
@@ -257,7 +257,7 @@ max_secs = 300                 # listening stops by itself (5..600)
 paste_mode = "live"            # live = hands-free types each phrase as it is ready; end = all at once
 ```
 
-Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).
+Logs go to `%APPDATA%\AudCap\logs` (set `AUDCAP_LOG=debug` for more detail).
 
 ## How it works
 
@@ -279,7 +279,7 @@ Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).
 - **Window**: a separate short-lived process (`--settings` / `--recordings`), so
   the tray never loads a GUI stack. It shows the Svelte app (`frontend/`, Svelte 5
   + Tailwind CSS, embedded in the exe) in WebView2. The page talks to the exe over
-  a custom protocol (`http://meetrec.localhost/api/...`: config, devices,
+  a custom protocol (`http://audcap.localhost/api/...`: config, devices,
   recordings, audio with seeking, transcripts) and, when it's running, to the
   transcriber API on `127.0.0.1:8765`.
 - Closes the recording on sleep and re-checks mic usage on wake.
@@ -288,7 +288,7 @@ Logs go to `%APPDATA%\MeetRec\logs` (set `MEETREC_LOG=debug` for more detail).
 
 ```
 frontend/               Svelte app (the window's UI); builds to frontend/dist
-backend/recorder/       Rust crate -> meetrec.exe (tray, capture, window host)
+backend/recorder/       Rust crate -> audcap.exe (tray, capture, window host)
 backend/transcriber/    optional transcription API (Python, uv)
 build.ps1               builds the frontend, then the exe
 ```
@@ -308,12 +308,12 @@ generator and the `cl.exe` on `PATH` (adding `/FS` to `CFLAGS`), and sets
 `RC_PATH` from the `rc.exe` on `PATH` for the exe's resources.
 
 `build.ps1` builds the frontend (`npm ci` when needed, `npm run build` only when the UI sources changed), finds CMake
-(on `PATH`, else the one bundled with the VS build tools), checks that MeetRec isn't locking the exe,
+(on `PATH`, else the one bundled with the VS build tools), checks that AudCap isn't locking the exe,
 and builds (`-Dev` debug build, `-Test` run frontend and Rust unit tests first,
-`-Start` launch the tray afterwards, `-Force` kill a running MeetRec):
+`-Start` launch the tray afterwards, `-Force` kill a running AudCap):
 
 ```
-.\build.ps1 -Test -Start     # backend\recorder\target\x86_64-pc-windows-msvc\release\meetrec.exe
+.\build.ps1 -Test -Start     # backend\recorder\target\x86_64-pc-windows-msvc\release\audcap.exe
 .\copy-release.bat           # copy that exe to C:\Drive\Software\Apps\audio-capture and start it there
 cd frontend; npm test        # UI unit tests (Vitest)
 cd frontend; npm run dev     # UI dev server (API calls need the exe, so mostly for styling)
@@ -321,7 +321,7 @@ cd backend\recorder
 cargo build --release        # exe only; embeds frontend\dist if it was built (else a placeholder page)
 cargo test --lib             # unit tests
 cargo test --lib -- --ignored  # + tests that need real audio devices
-meetrec.exe --record-test 60 out.opus   # 60 s capture spike, no tray
+audcap.exe --record-test 60 out.opus   # 60 s capture spike, no tray
 ```
 
 ### Updating after a code change
@@ -331,7 +331,7 @@ Windows locks the exe while the tray is running, so quit it first with tray menu
 window runs from the same exe, so changes to it also need a rebuild.
 
 ```powershell
-# 1. tray menu → Quit   (fallback: taskkill /f /im meetrec.exe; an open
+# 1. tray menu → Quit   (fallback: taskkill /f /im audcap.exe; an open
 #                        recording is then finalized as "recovered" on next start)
 .\build.ps1 -Start                          # LTO build: needs plenty of RAM, takes a few minutes; then starts the tray
 ```
@@ -339,7 +339,7 @@ window runs from the same exe, so changes to it also need a rebuild.
 The build always targets `x86_64-pc-windows-msvc` (`.cargo\config.toml`), so
 the exe is in `backend\recorder\target\x86_64-pc-windows-msvc\release\`. For
 daily use, `copy-release.bat` installs it in `C:\Drive\Software\Apps\audio-capture`:
-it stops the transcriber and every running MeetRec (an open recording is then
+it stops the transcriber and every running AudCap (an open recording is then
 finalized as "recovered"; quit from the tray first to avoid that), deletes the
 old exe there and the obsolete pre-target build folders (`target\`,
 `backend\recorder\target\release`, `…\debug`), copies the new exe, links

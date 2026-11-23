@@ -1,4 +1,4 @@
-"""Recordings under MeetRec's output folder (`YYYY/MM/*.opus` + `.json` sidecar)
+"""Recordings under AudCap's output folder (`YYYY/MM/*.opus` + `.json` sidecar)
 and whether each has a transcript next to it."""
 import json
 from datetime import datetime

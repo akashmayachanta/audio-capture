@@ -1,4 +1,4 @@
-# MeetRec — meeting recorder (Rust tray app + Svelte window + optional transcriber)
+# AudCap — meeting recorder (Rust tray app + Svelte window + optional transcriber)
 
 Records **microphone + system audio** to Ogg Opus files for a separate
 transcription/notes app. Mic goes on the **left** channel, system audio
@@ -7,7 +7,7 @@ Records automatically when an allow-listed app (Teams, Zoom, Webex, Slack,
 Chrome, Edge, Firefox, or a custom exe name) starts using the mic, and manually
 via tray menu / hotkeys. Also does **dictation**: hold (or double-tap) a key,
 speak, and the text is typed into the focused field. See `README.md` for user-facing docs and
-`docs/plans/meetrec-plan.md` for the original design.
+`docs/plans/audcap-plan.md` for the original design.
 
 ## Instructions
 
@@ -19,8 +19,8 @@ speak, and the text is typed into the focused field. See `README.md` for user-fa
   `cargo test --lib` while iterating.
 - Tests that need real audio hardware are `#[ignore]`; run them with
   `cargo test --lib -- --ignored`.
-- For live runs, point the app at a scratch config with `MEETREC_CONFIG` so the
-  user's `%APPDATA%\MeetRec\config.toml` and recordings folder are not touched.
+- For live runs, point the app at a scratch config with `AUDCAP_CONFIG` so the
+  user's `%APPDATA%\AudCap\config.toml` and recordings folder are not touched.
 - Don't write test cases for 'transcriber' - python app
 - Frontend logic lives in pure `frontend/src/lib/*.ts` with Vitest tests
   (`cd frontend; npm test`); `npm run check` must stay at 0 errors/warnings.
@@ -29,7 +29,7 @@ speak, and the text is typed into the focused field. See `README.md` for user-fa
 
 ```
 frontend/               Svelte 5 + TypeScript + Tailwind CSS v4 (Vite) -> frontend/dist
-backend/recorder/       Rust crate -> meetrec.exe (Cargo.toml, build.rs, src/, assets/)
+backend/recorder/       Rust crate -> audcap.exe (Cargo.toml, build.rs, src/, assets/)
 backend/transcriber/    optional transcription API (Python, uv)
 .cargo/config.toml      stays at the repo root (cargo finds it from backend/recorder)
 build.ps1               npm build, then cargo build in backend/recorder
@@ -52,34 +52,34 @@ build.ps1               npm build, then cargo build in backend/recorder
   (built statically by `audiopus_sys`) configures under CMake 4.
 - `.cargo/config.toml` also sets `[build] target = "x86_64-pc-windows-msvc"`, so
   output is under `target\x86_64-pc-windows-msvc\{debug,release}\`.
-- In `backend/recorder`: `cargo build --release` → `target\x86_64-pc-windows-msvc\release\meetrec.exe`.
+- In `backend/recorder`: `cargo build --release` → `target\x86_64-pc-windows-msvc\release\audcap.exe`.
   `copy-release.bat` (repo root) installs it in `C:\Drive\Software\Apps\audio-capture`:
   stops the transcriber (`/api/shutdown`, else kills the uv/python tree) and all
-  MeetRec processes, deletes the old exe + obsolete `target\`,
+  AudCap processes, deletes the old exe + obsolete `target\`,
   `backend\recorder\target\{release,debug}`, copies, junctions `transcriber\` to
   the repo's, starts the tray.
   `.\build.ps1` wraps it: `npm ci` (when needed) + `npm run build` in `frontend/` (skipped when nothing in `frontend/` or `src/` is newer than `dist/index.html`),
-  puts CMake on PATH (from PATH, or VS-bundled via vswhere), refuses if MeetRec runs from
+  puts CMake on PATH (from PATH, or VS-bundled via vswhere), refuses if AudCap runs from
   the output exe (`-Dev`, `-Test` = Vitest + `cargo test --lib`, `-Start`, `-Force`).
 - `build.rs` generates the exe icon, embeds version info + a DPI-aware manifest
-  (`assets/meetrec.manifest`) via `winresource`, and stages `frontend/dist` into
+  (`assets/audcap.manifest`) via `winresource`, and stages `frontend/dist` into
   `$OUT_DIR/frontend` for `include_dir!` — or a one-line placeholder page with a
   cargo warning when `dist` is missing, so `cargo test --lib` needs no npm.
 - From Git Bash, `/usr/bin/link` shadows MSVC `link.exe`; run cargo from PowerShell.
 
 ## Run modes (one exe)
 
-- `meetrec.exe` — tray process (default). Single instance via the
-  `Local\MeetRec.Tray` mutex. Never loads the GUI stack.
-- `meetrec.exe --settings` / `--recordings` — the window (separate short-lived
-  process, `Local\MeetRec.Settings` mutex): tao + wry (WebView2) showing the
-  Svelte app at `http://meetrec.localhost/#/settings` or `#/recordings`.
+- `audcap.exe` — tray process (default). Single instance via the
+  `Local\AudCap.Tray` mutex. Never loads the GUI stack.
+- `audcap.exe --settings` / `--recordings` — the window (separate short-lived
+  process, `Local\AudCap.Settings` mutex): tao + wry (WebView2) showing the
+  Svelte app at `http://audcap.localhost/#/settings` or `#/recordings`.
   Both pages stay mounted (tabs only hide them). Navigation, new windows and
   file drops can't leave the app origin. WebView2 data in
-  `%LOCALAPPDATA%\MeetRec\webview`; logs go to `logs\meetrec-window.*.log`. For live checks set
+  `%LOCALAPPDATA%\AudCap\webview`; logs go to `logs\audcap-window.*.log`. For live checks set
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333` and drive
   it over CDP (PrintWindow can't capture WebView2).
-- `meetrec.exe --record-test [secs] [out.opus]` — capture spike without the tray.
+- `audcap.exe --record-test [secs] [out.opus]` — capture spike without the tray.
 
 ## Architecture
 
@@ -95,7 +95,7 @@ device-change events
 Raw Input keys ─▶ dictation gesture ─▶ dictation controller ─▶ capture thread ─▶ clip on disk
                   (polled from the app loop; overlay = Win32 layered window)  └─ phrases (cut at pauses) ─▶ stream thread ─▶ POST /api/dictate per phrase ─▶ paste thread
 
-window process: WebView2 page ──meetrec:// custom protocol──▶ web_api (config, devices, recordings, audio, transcripts)
+window process: WebView2 page ──audcap:// custom protocol──▶ web_api (config, devices, recordings, audio, transcripts)
                               └──fetch 127.0.0.1:8765──────▶ transcriber API (jobs, models), optional
 ```
 
@@ -115,10 +115,10 @@ Paths below are under `backend/recorder/`.
 | `src/encode/opus_ogg.rs` | libopus multistream encoder (2 uncoupled mono streams, mapping family 1; mono = family 0) + Ogg writer, page flush every 1 s |
 | `src/detect/mic_usage.rs` | polls `HKCU\…\CapabilityAccessManager\ConsentStore\microphone`; in use = `LastUsedTimeStart > 0 && LastUsedTimeStop == 0`; excludes our own exe |
 | `src/tray.rs`, `src/hotkeys.rs` | tray icon/menu (`tray-icon`/`muda`; menu on right-click only, left double-click opens Recordings), global hotkeys |
-| `src/icon.rs` | the MeetRec mark (rounded square + white wave bars), dependency-free; tray (state colours), window icon, and `build.rs` (exe icon, via `#[path]`); the header SVG in `App.svelte` copies it |
+| `src/icon.rs` | the AudCap mark (rounded square + white wave bars), dependency-free; tray (state colours), window icon, and `build.rs` (exe icon, via `#[path]`); the header SVG in `App.svelte` copies it |
 | `src/transcriber.rs` | `find_dir` (config `transcriber_dir`, else `transcriber/` or `backend/transcriber/` up from the exe); `Launcher` spawns `uv run python -m app` hidden (log `logs/transcriber.log`), `status()` = running / exit code + log tail |
 | `src/config.rs` | `config.toml` (serde defaults, sanitizing, mtime watcher) |
-| `src/window.rs` | the window: tao event loop, wry WebView, async `meetrec` custom protocol → `web_api::handle` on a thread per request; `WindowHost` (devices on an MTA thread, rfd folder picker, Explorer); message box if WebView2 fails |
+| `src/window.rs` | the window: tao event loop, wry WebView, async `audcap` custom protocol → `web_api::handle` on a thread per request; `WindowHost` (devices on an MTA thread, rfd folder picker, Explorer); message box if WebView2 fails |
 | `src/web_api/mod.rs` | **pure** router `handle(&dyn Host, &Request) -> Response`: `GET/PUT /api/config` (sanitized save, `{config, known_apps}`), `GET /api/devices`, `GET /api/recordings` (`{output_dir, recordings}`), `GET /api/transcript?id=` (raw `.md`; `DELETE` removes it, the recording stays), `DELETE /api/recording?id=` (`.opus` + sidecar + `.md`), `GET /api/audio?id=` (Range → 206, open-ended capped at 2 MiB, bad → 416), `POST /api/open-folder`, `POST /api/pick-folder`, `GET /api/transcriber` (launch status + `dir`), `POST /api/transcriber/start`, `POST /api/detect-key` (waits 5 s for a key → `{key: {id, name}}` or `{key: null}`; Esc = null); other paths → assets |
 | `src/web_api/files.rs` | id (path relative to `output_dir`, `/`-separated) → `.opus` inside the root only; `parse_range`; `speakers` from the sidecar channel map; `RecordingJson` |
 | `src/web_api/assets.rs` | embedded `frontend/dist` (`include_dir!`), content types |
@@ -131,7 +131,7 @@ Paths below are under `backend/recorder/`.
 | `src/dictation/controller.rs` | **pure** dictation state machine (idle / hold / toggle / transcribing) → actions |
 | `src/dictation/segmenter.rs` | **pure** phrase cutter on 20 ms frames: a phrase ends after 0.6 s of silence (0.2 s padding kept), or at 15 s at the quietest frame of the last 3 s; `flush` gives the tail; `level_of` |
 | `src/dictation/capture.rs` | `encode_clip` (a phrase → its own small Opus clip); hands phrases to an optional channel that closes when the recording ends; mic → level meter + mono Opus clip `<output_dir>/dictation/YYYY/MM/YYYY-MM-DD_HHMMSS.opus` (`.part` while writing, no sidecar) |
-| `src/dictation/client.rs` | hand-written loopback HTTP client for the transcriber (`health`, `dictate`; no chunked replies); `MEETREC_TRANSCRIBER_ADDR` overrides `127.0.0.1:8765` |
+| `src/dictation/client.rs` | hand-written loopback HTTP client for the transcriber (`health`, `dictate`; no chunked replies); `AUDCAP_TRANSCRIBER_ADDR` overrides `127.0.0.1:8765` |
 | `src/dictation/service.rs` | `SpeechService`: launcher + health poller + stop plan; backs the tray's "Start/Stop speech service" item |
 | `src/dictation/paste.rs` | plain-text clipboard → Ctrl+V, old text restored after ~500 ms; non-text clipboard → text typed with Unicode `SendInput`; elevated target → left on the clipboard + toast; `send_menu_mask_key` (VK 0xFF) |
 | `src/dictation/overlay_scene.rs`, `overlay.rs` | **pure** rendering of a round microphone badge (96 px at 100%; listening = voice-reactive halo and ripples, starting / transcribing = a light running round the rim, error = red flash; no text) and the Win32 layered window showing it |
@@ -145,13 +145,13 @@ markers). Files are `.part` while recording.
 
 ## Config
 
-`%APPDATA%\MeetRec\config.toml` (override with `MEETREC_CONFIG`): capture_mode,
+`%APPDATA%\AudCap\config.toml` (override with `AUDCAP_CONFIG`): capture_mode,
 mic_device, system_device (render endpoint for loopback), output_dir, bitrate_kbps, auto_record, trigger_apps,
 release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows,
 transcriber_dir (empty = auto), `[dictation]`: enabled (true), hold_key and
 toggle_key (`KeyId` names, default `RightAlt`; empty = off), keep_audio (true),
 max_secs (300, clamped 5–600), paste_mode (`live` (default) | `end`).
-Logs: `%APPDATA%\MeetRec\logs` (`MEETREC_LOG=debug` for more). A leftover
+Logs: `%APPDATA%\AudCap\logs` (`AUDCAP_LOG=debug` for more). A leftover
 `[transcription]` section from older builds is ignored.
 
 ## Frontend (`frontend/`)
@@ -183,14 +183,14 @@ The Rust exe doesn't transcribe. `backend/transcriber/` is a uv project (Python
 3.11, pinned deps, torch from the PyTorch CPU index) serving an API only (the
 window is its UI): `uv run python -m app` → `http://127.0.0.1:8765/`. The window's
 Start button runs that (see `src/transcriber.rs`); Stop calls `POST /api/shutdown`. Settings in
-`backend/transcriber/settings.toml` (`MEETREC_TRANSCRIBER_SETTINGS` overrides the path;
+`backend/transcriber/settings.toml` (`AUDCAP_TRANSCRIBER_SETTINGS` overrides the path;
 use it with a scratch `recordings_dir`/`cache_dir` for live runs). Recordings dir
-defaults to `output_dir` from MeetRec's config.toml; the window disables
+defaults to `output_dir` from AudCap's config.toml; the window disables
 Transcribe when the two folders differ.
 
 | File | Role |
 | ------ | ------ |
-| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`, `GET /api/health`, `POST /api/dictate` (Opus clip in the body → `{text}`; 409 no model chosen, 503 loading, 500 load failed, 400 bad/empty audio, 413 too large), `POST /api/shutdown` (`__main__` sets uvicorn `should_exit`, closes the engine, `os._exit`); Host-header check (DNS rebinding); CORS for `http://meetrec.localhost` only |
+| `app/server.py` | `build()` wires store + engines and starts loading the startup model; routes: `/api/state`, `POST /api/load`, `POST /api/transcribe`, `POST /api/cancel`, `GET /api/health`, `POST /api/dictate` (Opus clip in the body → `{text}`; 409 no model chosen, 503 loading, 500 load failed, 400 bad/empty audio, 413 too large), `POST /api/shutdown` (`__main__` sets uvicorn `should_exit`, closes the engine, `os._exit`); Host-header check (DNS rebinding); CORS for `http://audcap.localhost` only |
 | `app/jobs.py` | one worker thread, queue, cancel; decode → chunk → engine → `<name>.md` |
 | `app/engines.py` | `BarkEngine` (Underdog Bark 3.0 via transformers `ParakeetForTDT`, batches of 4; `device` `auto`/`cpu`/`gpu`/`cuda`: `gpu` = encoder on Intel graphics via OpenVINO with inputs padded to full batches and 256-frame multiples so few shapes get compiled, `auto` falls back to CPU with a log warning) and `WhistleEngine` (`cactus-needle`, telemetry off; one model per process and ~2 cores each, so `workers` > 1 = a `ProcessPoolExecutor` of Whistles, `close()` terminates them); pinned HF revisions; `CATALOG`; `EngineCache` holds one model: `load_async` + `status()` for the header, jobs `get()` the active one |
 | `app/store.py` | SQLite `transcriber.db` in the cache folder: `models` (list shown in Settings, order from `CATALOG`; `enabled` hides one) and `prefs.model` (loaded last, reloaded at startup) |
@@ -208,18 +208,18 @@ Transcribe when the two folders differ.
   (no faster, 72/401 words changed). NPU not tried. Whistle is faster than CPU Bark
   but less accurate (1 process 2.1-2.7x, 4 processes 6.6-7.1x; 6 were slower than 4); Whistle `language = "auto"` mislabels short noisy
   pieces, so the default is `en`.
-- Old OpenVINO cache folders directly in `%LOCALAPPDATA%\MeetRec` (`venv`, `models`,
-  `ov_cache`, `tmp`) are unused; the current ones are under `MeetRec\transcriber\`.
+- Old OpenVINO cache folders directly in `%LOCALAPPDATA%\AudCap` (`venv`, `models`,
+  `ov_cache`, `tmp`) are unused; the current ones are under `AudCap\transcriber\`.
 
 ## Known open issues
 
-- **Do not run a second `meetrec.exe` tray for tests, even with `MEETREC_CONFIG`:**
+- **Do not run a second `audcap.exe` tray for tests, even with `AUDCAP_CONFIG`:**
   `App::new` runs `autostart::sync`, which rewrites or deletes the real HKCU
-  `Run\MeetRec` entry whatever the scratch config says. Drive `Dictation` from an
+  `Run\AudCap` entry whatever the scratch config says. Drive `Dictation` from an
   `#[ignore]` test instead. Dictation's live tests (`dictation::paste`,
   `rawinput`, `overlay`, `capture`, `service`) overwrite the clipboard and inject
   keys; for the service use a scratch server on another port
-  (`MEETREC_TRANSCRIBER_SETTINGS` + `MEETREC_TRANSCRIBER_ADDR`).
+  (`AUDCAP_TRANSCRIBER_SETTINGS` + `AUDCAP_TRANSCRIBER_ADDR`).
 - Dictation: the first clip after a long idle may lose ~0.5 s (slow mic open);
   keyboards that hide Fn from Windows cannot bind it (keyboard Raw Input only).
 

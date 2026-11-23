@@ -41,7 +41,7 @@ impl IconKind {
 
 pub const ICON_SIZE: u32 = 32;
 
-/// The MeetRec mark (`crate::icon`) in the state colour, RGBA.
+/// The AudCap mark (`crate::icon`) in the state colour, RGBA.
 pub fn icon_rgba(kind: IconKind) -> Vec<u8> {
     crate::icon::render(ICON_SIZE, kind.rgb())
 }
@@ -64,12 +64,12 @@ pub fn tooltip(state: &State, elapsed: Duration) -> String {
         format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
     };
     let with_app = |verb: &str, app: &Option<String>| match app {
-        Some(a) => format!("MeetRec — {verb} {a} {}", clock()),
-        None => format!("MeetRec — {verb} {}", clock()),
+        Some(a) => format!("AudCap — {verb} {a} {}", clock()),
+        None => format!("AudCap — {verb} {}", clock()),
     };
     match state {
-        State::Idle => "MeetRec — idle".into(),
-        State::Armed => "MeetRec — waiting for a meeting".into(),
+        State::Idle => "AudCap — idle".into(),
+        State::Armed => "AudCap — waiting for a meeting".into(),
         State::Recording { app, .. } => with_app("recording", app),
         State::Paused { app, .. } => with_app("paused", app),
     }
@@ -149,7 +149,7 @@ impl Tray {
             // Left button is for double-click (open the window); a single left
             // click would otherwise pop the menu up over it.
             .with_menu_on_left_click(false)
-            .with_tooltip("MeetRec")
+            .with_tooltip("AudCap")
             .with_icon(make_icon(IconKind::Idle)?)
             .build()?;
         Ok(Self {
@@ -289,16 +289,16 @@ mod tests {
 
     #[test]
     fn tooltip_shows_state_app_and_elapsed() {
-        assert_eq!(tooltip(&State::Idle, Duration::ZERO), "MeetRec — idle");
-        assert_eq!(tooltip(&State::Armed, Duration::ZERO), "MeetRec — waiting for a meeting");
+        assert_eq!(tooltip(&State::Idle, Duration::ZERO), "AudCap — idle");
+        assert_eq!(tooltip(&State::Armed, Duration::ZERO), "AudCap — waiting for a meeting");
         assert_eq!(
             tooltip(&rec(Some("Teams")), Duration::from_secs(3723)),
-            "MeetRec — recording Teams 1:02:03"
+            "AudCap — recording Teams 1:02:03"
         );
-        assert_eq!(tooltip(&rec(None), Duration::from_secs(65)), "MeetRec — recording 0:01:05");
+        assert_eq!(tooltip(&rec(None), Duration::from_secs(65)), "AudCap — recording 0:01:05");
         assert_eq!(
             tooltip(&State::Paused { trigger: Trigger::Manual, app: Some("Zoom".into()) }, Duration::from_secs(5)),
-            "MeetRec — paused Zoom 0:00:05"
+            "AudCap — paused Zoom 0:00:05"
         );
     }
 }

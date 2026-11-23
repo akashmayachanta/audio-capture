@@ -128,7 +128,7 @@
         <div class="hint">
           <Icon name="alert" size={16} />
           <span
-            >The transcriber reads <code class="font-mono text-[11.5px] break-all">{t.state?.recordings_dir}</code> but MeetRec saves to
+            >The transcriber reads <code class="font-mono text-[11.5px] break-all">{t.state?.recordings_dir}</code> but AudCap saves to
             <code class="font-mono text-[11.5px] break-all">{outputDir}</code>. Point both at the same folder to transcribe.</span
           >
         </div>

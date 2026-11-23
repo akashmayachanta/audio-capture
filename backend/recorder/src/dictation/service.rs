@@ -107,7 +107,7 @@ impl SpeechService {
     pub fn start(&self, configured_dir: &Path) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let dir = transcriber::find_dir(configured_dir, &exe).ok_or_else(|| {
-            "The speech service folder was not found next to meetrec.exe. Set transcriber_dir in config.toml.".to_string()
+            "The speech service folder was not found next to audcap.exe. Set transcriber_dir in config.toml.".to_string()
         })?;
         self.launcher.start(&dir)
     }
@@ -167,13 +167,13 @@ mod tests {
     }
 
     /// Starts and stops a real transcriber. Needs a scratch server on its own port, e.g.
-    /// `MEETREC_TRANSCRIBER_ADDR=127.0.0.1:8799` and `MEETREC_TRANSCRIBER_SETTINGS=<scratch settings.toml, port 8799>`.
+    /// `AUDCAP_TRANSCRIBER_ADDR=127.0.0.1:8799` and `AUDCAP_TRANSCRIBER_SETTINGS=<scratch settings.toml, port 8799>`.
     #[test]
     #[ignore = "starts the real transcriber (see the doc comment for the env vars)"]
     fn start_and_stop_the_real_service() {
-        let addr = std::env::var("MEETREC_TRANSCRIBER_ADDR").expect("MEETREC_TRANSCRIBER_ADDR");
+        let addr = std::env::var("AUDCAP_TRANSCRIBER_ADDR").expect("AUDCAP_TRANSCRIBER_ADDR");
         assert_ne!(addr, super::super::client::TRANSCRIBER_ADDR, "use a scratch port, not the real service");
-        std::env::var("MEETREC_TRANSCRIBER_SETTINGS").expect("MEETREC_TRANSCRIBER_SETTINGS");
+        std::env::var("AUDCAP_TRANSCRIBER_SETTINGS").expect("AUDCAP_TRANSCRIBER_SETTINGS");
         let log = tempfile::tempdir().unwrap();
         let mut s = SpeechService::new(log.path().join("transcriber.log"));
         let transcriber = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../transcriber");

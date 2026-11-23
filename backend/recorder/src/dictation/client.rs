@@ -51,10 +51,10 @@ impl Client {
         Self { addr: addr.to_string(), dictate_timeout: Duration::from_secs(600) }
     }
 
-    /// The transcriber on this machine. `MEETREC_TRANSCRIBER_ADDR` points scratch
-    /// runs at another one, like `MEETREC_CONFIG` does for the config.
+    /// The transcriber on this machine. `AUDCAP_TRANSCRIBER_ADDR` points scratch
+    /// runs at another one, like `AUDCAP_CONFIG` does for the config.
     pub fn local() -> Self {
-        Self::new(&local_addr(std::env::var("MEETREC_TRANSCRIBER_ADDR").ok()))
+        Self::new(&local_addr(std::env::var("AUDCAP_TRANSCRIBER_ADDR").ok()))
     }
 
     /// The API answers `GET /api/health`.

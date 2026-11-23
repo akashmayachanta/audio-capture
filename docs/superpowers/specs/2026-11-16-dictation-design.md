@@ -4,7 +4,7 @@ Status: draft for approval. Not committed (project rule: the user commits).
 
 ## Intent and why
 
-MeetRec already records meetings and can transcribe them afterwards with a local
+AudCap already records meetings and can transcribe them afterwards with a local
 model. The user also wants to *dictate*: press a shortcut, talk, and have the
 words appear in whatever text field currently has focus, in any app. While
 listening, a small animation (like a phone's smart assistant) shows that the
@@ -71,7 +71,7 @@ talk, double-tap it for hands-free). Both are separately configurable.
   thread-safe (a Whistle instance holds one native model). A meeting
   transcription can run for a long time, so dictation must be able to cut in.
 - The tray has no HTTP client yet (the window uses `fetch`). The transcriber
-  listens on `127.0.0.1:8765`; its Host-header check and CORS (`meetrec.localhost`
+  listens on `127.0.0.1:8765`; its Host-header check and CORS (`audcap.localhost`
   only) stay as they are.
 - `Launcher::start` (`src/transcriber.rs`) starts the server hidden via `uv`,
   and a second start while it runs is a no-op. The window process owns the
@@ -176,7 +176,7 @@ without pasting (the audio is kept; the server may finish the piece it is on).
   key picker (each: a list of common keys with Right Alt as the default, plus
   a **Detect…** button), keep-audio switch, and a note when the transcriber or model is
   not ready. Detect is a window-process call (`POST /api/detect-key` on the
-  `meetrec://` API, host-implemented): it opens a message-only Raw Input
+  `audcap://` API, host-implemented): it opens a message-only Raw Input
   window, waits up to ~5 s for the next key, and returns its id and display
   name, or "no key detected".
 

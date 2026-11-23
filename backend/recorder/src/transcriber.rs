@@ -79,7 +79,7 @@ impl Launcher {
                 Ok(())
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err("uv was not found on PATH. Install it from https://docs.astral.sh/uv/ and reopen MeetRec.".into())
+                Err("uv was not found on PATH. Install it from https://docs.astral.sh/uv/ and reopen AudCap.".into())
             }
             Err(e) => Err(format!("could not start the transcriber: {e}")),
         }
@@ -136,7 +136,7 @@ mod tests {
     fn finds_the_repo_transcriber_from_a_dev_build() {
         let root = tempfile::tempdir().unwrap();
         project(&root.path().join("backend/transcriber"));
-        let exe = root.path().join("backend/recorder/target/release/meetrec.exe");
+        let exe = root.path().join("backend/recorder/target/release/audcap.exe");
         assert_eq!(find_dir(Path::new(""), &exe), Some(root.path().join("backend").join("transcriber")));
     }
 
@@ -144,7 +144,7 @@ mod tests {
     fn finds_a_transcriber_folder_next_to_the_exe() {
         let root = tempfile::tempdir().unwrap();
         project(&root.path().join("transcriber"));
-        let exe = root.path().join("meetrec.exe");
+        let exe = root.path().join("audcap.exe");
         assert_eq!(find_dir(Path::new(""), &exe), Some(root.path().join("transcriber")));
     }
 
@@ -152,7 +152,7 @@ mod tests {
     fn configured_folder_wins_and_must_be_a_project() {
         let root = tempfile::tempdir().unwrap();
         project(&root.path().join("transcriber"));
-        let exe = root.path().join("meetrec.exe");
+        let exe = root.path().join("audcap.exe");
         let other = root.path().join("elsewhere");
         assert_eq!(find_dir(&other, &exe), None);
         project(&other);
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn nothing_found_is_none() {
         let root = tempfile::tempdir().unwrap();
-        assert_eq!(find_dir(Path::new(""), &root.path().join("a/b/meetrec.exe")), None);
+        assert_eq!(find_dir(Path::new(""), &root.path().join("a/b/audcap.exe")), None);
     }
 
     #[test]

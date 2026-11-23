@@ -19,7 +19,7 @@
 - Defaults: `hold_key = "RightAlt"`, `toggle_key = "RightAlt"`, `enabled = true`, `keep_audio = true`, `max_secs = 300`. Timings: hold = down ≥ 300 ms; overlay shows after 150 ms held; double-tap = two taps with ≤ 400 ms between them; hold < 300 ms is a tap.
 - Dictation audio: `<output_dir>/dictation/YYYY/MM/YYYY-MM-DD_HHMMSS.opus`, mono, `.opus.part` while writing, no sidecar.
 - The transcriber is `127.0.0.1:8765`; dictation never stops it.
-- Debug builds only while iterating (release LTO needs lots of RAM). Live runs use `MEETREC_CONFIG` pointing at a scratch config.
+- Debug builds only while iterating (release LTO needs lots of RAM). Live runs use `AUDCAP_CONFIG` pointing at a scratch config.
 
 ## Review Focus
 
@@ -124,7 +124,7 @@ Modified: `lib.rs`, `Cargo.toml`, `config.rs`, `app.rs`, `tray.rs`, `recordings.
 - Produces: `GET /api/health` → `{"ok": true}`; `POST /api/dictate` (body = Ogg Opus bytes, ≤ 20 MiB) → `{"text": str, "model": str, "secs": float}`; 409 `no model selected`; 503 `model loading` (while `engines.status()["loading"]`); 400 undecodable audio. `audio.decode_bytes(data: bytes) -> np.ndarray` (16 kHz mono float32; first channel only, via `av.open(io.BytesIO(data))`). `EngineCache.dictation()` context manager and `EngineCache.pause_point()`; both engines' `transcribe(..., pause_point=lambda: None)` call it before each piece/batch.
 - Behaviour: dictation gets priority at piece boundaries: while a `dictation()` block is active `pause_point()` blocks batch jobs; the block waits for the piece in flight to finish before using the engine. `Jobs.transcribe_recording` passes `engines.pause_point`. Dictation reuses `chunking.plan` + the active engine and joins piece texts with a space. CORS needs no change (the tray is not a browser).
 
-- [ ] **Step 1:** implement. **Step 2: Verify** (PowerShell, `backend/transcriber`, scratch settings via `MEETREC_TRANSCRIBER_SETTINGS`): start the server, `curl.exe -s http://127.0.0.1:8765/api/health` → `{"ok":true}`; POST a real recording clip: `curl.exe -s -X POST --data-binary "@<file>.opus" http://127.0.0.1:8765/api/dictate` returns text once Whistle is loaded and 503/409 before; start a meeting transcription and POST a dictation during it → the dictation returns within about one piece, and the job still completes.
+- [ ] **Step 1:** implement. **Step 2: Verify** (PowerShell, `backend/transcriber`, scratch settings via `AUDCAP_TRANSCRIBER_SETTINGS`): start the server, `curl.exe -s http://127.0.0.1:8765/api/health` → `{"ok":true}`; POST a real recording clip: `curl.exe -s -X POST --data-binary "@<file>.opus" http://127.0.0.1:8765/api/dictate` returns text once Whistle is loaded and 503/409 before; start a meeting transcription and POST a dictation during it → the dictation returns within about one piece, and the job still completes.
 
 ### Task 8: Transcriber client (Rust)
 
@@ -190,7 +190,7 @@ Modified: `lib.rs`, `Cargo.toml`, `config.rs`, `app.rs`, `tray.rs`, `recordings.
 - `Dictation::new` failing (Raw Input) → log + toast once; the rest of `App` starts normally.
 
 - [ ] **Step 1:** add a testable seam: `Dictation::step(&mut self, input: Input) -> Vec<Action>` is just the controller; unit tests for `apply_config` key parsing (`""` and `"nope"` → that gesture disabled, `"rightalt"` → enabled). **Step 2:** implement and call `dictation.poll` from the `App::run` loop; shorten the wait to 16 ms while the overlay is visible.
-- [ ] **Step 3: Manual verification (scratch config via `MEETREC_CONFIG`, debug build, transcriber started from the tray item):** hold Right Alt in Notepad, say a sentence, release → text pasted; the overlay shows within ~150 ms and reacts to the voice; double-tap → listening, double-tap → pasted; Right Alt+E types normally and does nothing else; quick Right Alt tap does nothing; Esc cancels; stop the server and dictate → toast, clip kept in `dictation/`; start a meeting recording and dictate during it → both fine; Alt-menu check (Notepad/Explorer) after a hold: no menu bar activation (if it activates, add the unassigned-key trick from the spec in `rawinput.rs`/`paste.rs`); confirm the auto-record detector does not trigger on dictation (the mic-usage exclusion covers the tray exe; if not, fix there).
+- [ ] **Step 3: Manual verification (scratch config via `AUDCAP_CONFIG`, debug build, transcriber started from the tray item):** hold Right Alt in Notepad, say a sentence, release → text pasted; the overlay shows within ~150 ms and reacts to the voice; double-tap → listening, double-tap → pasted; Right Alt+E types normally and does nothing else; quick Right Alt tap does nothing; Esc cancels; stop the server and dictate → toast, clip kept in `dictation/`; start a meeting recording and dictate during it → both fine; Alt-menu check (Notepad/Explorer) after a hold: no menu bar activation (if it activates, add the unassigned-key trick from the spec in `rawinput.rs`/`paste.rs`); confirm the auto-record detector does not trigger on dictation (the mic-usage exclusion covers the tray exe; if not, fix there).
 
 ### Task 14: Settings UI and key detection
 

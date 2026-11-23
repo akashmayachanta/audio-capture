@@ -146,7 +146,7 @@ impl Session {
         let file = File::create(&part).with_context(|| format!("create {}", part.display()))?;
         let channel_tag = meta.channels.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",");
         let date = start.to_rfc3339();
-        let tags = [("MEETREC_CHANNELS", channel_tag.as_str()), ("DATE", date.as_str())];
+        let tags = [("AUDCAP_CHANNELS", channel_tag.as_str()), ("DATE", date.as_str())];
         let writer = OggOpusWriter::new(BufWriter::new(file), n, info.bitrate_kbps as i32 * 1000, &tags)?;
         let session = Self { meta, part, json_part, final_path, writer, paused: false };
         session.save_sidecar()?;

@@ -80,7 +80,7 @@ pub fn handle(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
         "transcriber/start" => only(Method::POST, &|| match transcriber_dir(host) {
             None => error(
                 StatusCode::NOT_FOUND,
-                "The transcriber folder was not found next to meetrec.exe. Set transcriber_dir in config.toml.",
+                "The transcriber folder was not found next to audcap.exe. Set transcriber_dir in config.toml.",
             ),
             Some(dir) => match host.start_transcriber(&dir) {
                 Ok(()) => ok_json(json!({ "dir": dir })),
@@ -320,7 +320,7 @@ mod tests {
             self.opened.borrow_mut().push(dir.to_path_buf());
         }
         fn exe_path(&self) -> PathBuf {
-            self.dir.path().join("app").join("meetrec.exe")
+            self.dir.path().join("app").join("audcap.exe")
         }
         fn start_transcriber(&self, dir: &Path) -> Result<(), String> {
             self.started.borrow_mut().push(dir.to_path_buf());
@@ -354,7 +354,7 @@ mod tests {
         r.headers().get(name).map(|v| v.to_str().unwrap()).unwrap_or("")
     }
 
-    const BASE: &str = "http://meetrec.localhost";
+    const BASE: &str = "http://audcap.localhost";
 
     #[test]
     fn get_config_creates_defaults_and_lists_known_apps() {

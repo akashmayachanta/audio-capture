@@ -1,7 +1,7 @@
-# MeetRec transcriber settings. Restart the server after editing.
+# AudCap transcriber settings. Restart the server after editing.
 
 # Folder with the recordings (YYYY/MM/*.opus). Empty = output_dir from
-# MeetRec's config.toml (%APPDATA%\MeetRec\config.toml, or MEETREC_CONFIG).
+# AudCap's config.toml (%APPDATA%\AudCap\config.toml, or AUDCAP_CONFIG).
 recordings_dir = ""
 
 # Model loaded at startup when none was loaded before. After that the app
@@ -25,7 +25,7 @@ language = "en"
 # 2 cores and 100 MB each). 0 = auto: a third of the CPU's logical cores, at most 4.
 workers = 0
 
-# Downloaded models. Empty = %LOCALAPPDATA%\MeetRec\transcriber.
+# Downloaded models. Empty = %LOCALAPPDATA%\AudCap\transcriber.
 cache_dir = ""
 
 host = "127.0.0.1"

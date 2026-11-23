@@ -2,7 +2,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vitest/config'
 
-// Built into dist/ and embedded in meetrec.exe (see backend/recorder/build.rs).
+// Built into dist/ and embedded in audcap.exe (see backend/recorder/build.rs).
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
   base: './',

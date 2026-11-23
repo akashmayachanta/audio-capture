@@ -1,5 +1,5 @@
 """The transcript Markdown file next to a recording (`…_Teams.opus` -> `…_Teams.md`),
-in the same layout MeetRec has always written, and parsing it back for the UI."""
+in the same layout AudCap has always written, and parsing it back for the UI."""
 import os
 import re
 from dataclasses import dataclass, field

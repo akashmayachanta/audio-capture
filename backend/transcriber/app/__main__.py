@@ -1,4 +1,4 @@
-"""`uv run python -m app`: serve the transcription API for the MeetRec window on localhost."""
+"""`uv run python -m app`: serve the transcription API for the AudCap window on localhost."""
 import logging
 import os
 import warnings

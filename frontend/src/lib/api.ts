@@ -1,4 +1,4 @@
-// Two backends: meetrec.exe (same origin, always there) and the optional
+// Two backends: audcap.exe (same origin, always there) and the optional
 // transcriber API on localhost.
 
 import type { Job, LocalRecording } from './recordings'

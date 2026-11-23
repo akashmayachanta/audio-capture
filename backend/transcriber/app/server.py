@@ -1,6 +1,6 @@
-"""FastAPI app, API only (the MeetRec window is the UI): recordings with
+"""FastAPI app, API only (the AudCap window is the UI): recordings with
 transcript status, loading a model and starting/cancelling transcriptions, and stopping the server.
-The window reads transcripts and audio from meetrec.exe itself."""
+The window reads transcripts and audio from audcap.exe itself."""
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
@@ -14,8 +14,8 @@ from .engines import CATALOG, EngineCache
 from .jobs import Jobs
 from .store import Store
 
-# The MeetRec window (WebView2 custom protocol) calls this API cross-origin.
-APP_ORIGIN = "http://meetrec.localhost"
+# The AudCap window (WebView2 custom protocol) calls this API cross-origin.
+APP_ORIGIN = "http://audcap.localhost"
 MAX_DICTATION_BYTES = 20 * 1024 * 1024
 log = logging.getLogger("transcriber")
 
@@ -44,7 +44,7 @@ def build(settings, shutdown=lambda: None):
 
 def create_app(s, engines, store, jobs=None, shutdown=lambda: None):
     jobs = jobs or Jobs(engines)
-    app = FastAPI(title="MeetRec Transcripts", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="AudCap Transcripts", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.engines = engines
     allowed_hosts = {f"{h}:{s.port}" for h in ("127.0.0.1", "localhost", s.host)} | {"testserver"}
 

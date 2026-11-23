@@ -1,4 +1,4 @@
-//! Embeds the exe icon, version info and manifest. The icon (the MeetRec mark in
+//! Embeds the exe icon, version info and manifest. The icon (the AudCap mark in
 //! red, `src/icon.rs`, as in the tray) is generated here, so the repo carries no binary assets.
 //! Also stages the Svelte app (`frontend/dist`) for `include_dir!`, or a placeholder
 //! page when it has not been built (so `cargo test` works without npm).
@@ -11,21 +11,21 @@ mod icon;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=assets/meetrec.manifest");
+    println!("cargo:rerun-if-changed=assets/audcap.manifest");
     println!("cargo:rerun-if-changed=src/icon.rs");
     stage_frontend();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
     let out = std::env::var("OUT_DIR").unwrap();
-    let ico = Path::new(&out).join("meetrec.ico");
+    let ico = Path::new(&out).join("audcap.ico");
     write_ico(&ico, &[16, 32, 48, 256]).expect("write icon");
 
     let mut res = winresource::WindowsResource::new();
     res.set_icon(ico.to_str().unwrap())
-        .set("FileDescription", "MeetRec meeting recorder")
-        .set("ProductName", "MeetRec")
-        .set_manifest_file("assets/meetrec.manifest");
+        .set("FileDescription", "AudCap meeting recorder")
+        .set("ProductName", "AudCap")
+        .set_manifest_file("assets/audcap.manifest");
     res.compile().expect("compile Windows resources");
 }
 
@@ -42,7 +42,7 @@ fn stage_frontend() {
         println!("cargo:warning=frontend/dist missing; embedding a placeholder (run build.ps1 to build the app)");
         std::fs::write(
             out.join("index.html"),
-            "<!doctype html><title>MeetRec</title><p>Frontend not built. Run build.ps1.</p>",
+            "<!doctype html><title>AudCap</title><p>Frontend not built. Run build.ps1.</p>",
         )
         .expect("write placeholder");
     }

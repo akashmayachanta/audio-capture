@@ -161,7 +161,7 @@ impl Capture {
         let part = append_ext(&path, ".part");
         let file = File::create(&part).with_context(|| format!("create {}", part.display()))?;
         let date = Local::now().to_rfc3339();
-        let tags = [("MEETREC_CHANNELS", "mono=mic"), ("DATE", date.as_str())];
+        let tags = [("AUDCAP_CHANNELS", "mono=mic"), ("DATE", date.as_str())];
         let writer = OggOpusWriter::new(BufWriter::new(file), 1, bitrate_bps, &tags)?;
         let shared = Arc::new(Shared::default());
         let s = shared.clone();

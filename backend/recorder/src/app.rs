@@ -364,7 +364,7 @@ impl App {
         // Showing a toast is a COM round trip; keep it off the UI thread.
         std::thread::spawn(move || {
             use tauri_winrt_notification::Toast;
-            if let Err(e) = Toast::new(Toast::POWERSHELL_APP_ID).title("MeetRec").text1(&msg).show() {
+            if let Err(e) = Toast::new(Toast::POWERSHELL_APP_ID).title("AudCap").text1(&msg).show() {
                 tracing::warn!("toast: {e}");
             }
         });

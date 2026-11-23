@@ -1,4 +1,4 @@
-// Recordings from meetrec.exe joined with transcription jobs from the transcriber.
+// Recordings from audcap.exe joined with transcription jobs from the transcriber.
 
 /** `GET /api/recordings` item (backend/recorder/src/web_api/files.rs `RecordingJson`). */
 export type LocalRecording = {

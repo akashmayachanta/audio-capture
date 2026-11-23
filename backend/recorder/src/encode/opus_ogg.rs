@@ -166,7 +166,7 @@ fn opus_head(channels: u8, pre_skip: u16) -> Vec<u8> {
 }
 
 fn opus_tags(tags: &[(&str, &str)]) -> Vec<u8> {
-    let vendor = concat!("meetrec ", env!("CARGO_PKG_VERSION"));
+    let vendor = concat!("audcap ", env!("CARGO_PKG_VERSION"));
     let mut t = Vec::new();
     t.extend_from_slice(b"OpusTags");
     t.extend_from_slice(&(vendor.len() as u32).to_le_bytes());

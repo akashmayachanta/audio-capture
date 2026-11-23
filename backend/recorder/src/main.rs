@@ -5,12 +5,12 @@ use std::io::BufWriter;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use meetrec::audio::capture::{CaptureStream, Source};
-use meetrec::audio::mixer::Mixer;
-use meetrec::audio::SAMPLE_RATE;
-use meetrec::config;
-use meetrec::window::Page;
-use meetrec::encode::opus_ogg::OggOpusWriter;
+use audcap::audio::capture::{CaptureStream, Source};
+use audcap::audio::mixer::Mixer;
+use audcap::audio::SAMPLE_RATE;
+use audcap::config;
+use audcap::window::Page;
+use audcap::encode::opus_ogg::OggOpusWriter;
 use ringbuf::traits::Split;
 use ringbuf::HeapRb;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -39,31 +39,31 @@ fn main() -> Result<()> {
 }
 
 fn run_window(page: Page) -> Result<()> {
-    let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\MeetRec.Settings"))? };
+    let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\AudCap.Settings"))? };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         return Ok(()); // a settings window is already open
     }
-    let _log_guard = init_file_logging("meetrec-window")?;
-    meetrec::window::run(config::config_path(), page)
+    let _log_guard = init_file_logging("audcap-window")?;
+    audcap::window::run(config::config_path(), page)
 }
 
 fn run_tray() -> Result<()> {
-    let _log_guard = init_file_logging("meetrec")?;
+    let _log_guard = init_file_logging("audcap")?;
     // One tray process per user session.
-    let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\MeetRec.Tray"))? };
+    let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\AudCap.Tray"))? };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         tracing::info!("already running");
         return Ok(());
     }
     std::panic::set_hook(Box::new(|info| tracing::error!("panic: {info}")));
-    let result = meetrec::app::App::new().and_then(|app| app.run());
+    let result = audcap::app::App::new().and_then(|app| app.run());
     if let Err(e) = &result {
         tracing::error!("fatal: {e:#}");
     }
     result
 }
 
-/// Daily log files in `%APPDATA%\MeetRec\logs`; the window process uses its own prefix.
+/// Daily log files in `%APPDATA%\AudCap\logs`; the window process uses its own prefix.
 fn init_file_logging(prefix: &str) -> Result<tracing_appender::non_blocking::WorkerGuard> {
     let dir = config::app_dir().join("logs");
     let appender = RollingFileAppender::builder()
@@ -73,7 +73,7 @@ fn init_file_logging(prefix: &str) -> Result<tracing_appender::non_blocking::Wor
         .max_log_files(7)
         .build(&dir)?;
     let (writer, guard) = tracing_appender::non_blocking(appender);
-    let filter = tracing_subscriber::EnvFilter::try_from_env("MEETREC_LOG").unwrap_or_else(|_| "info".into());
+    let filter = tracing_subscriber::EnvFilter::try_from_env("AUDCAP_LOG").unwrap_or_else(|_| "info".into());
     tracing_subscriber::fmt().with_writer(writer).with_ansi(false).with_env_filter(filter).init();
     Ok(guard)
 }
@@ -86,7 +86,7 @@ fn record_test(secs: u64, path: &str) -> Result<()> {
     let sys = CaptureStream::spawn(Source::System, None, sp);
     let mut mixer = Mixer::new(Some(mc), Some(sc));
     let file = File::create(path).with_context(|| format!("create {path}"))?;
-    let tags = [("MEETREC_CHANNELS", "left=mic,right=system")];
+    let tags = [("AUDCAP_CHANNELS", "left=mic,right=system")];
     let mut w = OggOpusWriter::new(BufWriter::new(file), mixer.channels() as u8, 32_000, &tags)?;
     let mut frame = Vec::new();
     let total = secs * SAMPLE_RATE as u64;

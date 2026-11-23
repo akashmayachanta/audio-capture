@@ -1,5 +1,5 @@
 @echo off
-rem Starts the transcription API (http://127.0.0.1:8765/ by default) used by the MeetRec window.
+rem Starts the transcription API (http://127.0.0.1:8765/ by default) used by the AudCap window.
 rem Close this window to stop it.
 setlocal
 cd /d "%~dp0"

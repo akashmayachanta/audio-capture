@@ -1,6 +1,6 @@
-//! `meetrec.exe --settings` / `--recordings`: a native window (tao) showing the
+//! `audcap.exe --settings` / `--recordings`: a native window (tao) showing the
 //! Svelte app in WebView2 (wry). The page and its API are served over the
-//! `meetrec` custom protocol (`http://meetrec.localhost/`); see `web_api`.
+//! `audcap` custom protocol (`http://audcap.localhost/`); see `web_api`.
 //! Runs in its own short-lived process, so the tray never loads WebView2.
 
 use std::path::{Path, PathBuf};
@@ -24,7 +24,7 @@ pub enum Page {
     Settings,
 }
 
-const APP_ORIGIN: &str = "http://meetrec.localhost/";
+const APP_ORIGIN: &str = "http://audcap.localhost/";
 
 /// Only the app itself may load in the window (not a dropped file, not a link).
 pub fn is_app_url(url: &str) -> bool {
@@ -89,15 +89,15 @@ impl Host for WindowHost {
 }
 
 fn webview_data_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("MeetRec").join("webview")
+    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("AudCap").join("webview")
 }
 
 pub fn run(config_path: PathBuf, page: Page) -> Result<()> {
     let result = open(config_path, page);
     if let Err(e) = &result {
-        let text = HSTRING::from(format!("MeetRec could not open its window.\n\n{e:#}\n\nIs the Microsoft Edge WebView2 runtime installed?"));
+        let text = HSTRING::from(format!("AudCap could not open its window.\n\n{e:#}\n\nIs the Microsoft Edge WebView2 runtime installed?"));
         unsafe {
-            MessageBoxW(None, &text, &HSTRING::from("MeetRec"), MB_OK | MB_ICONERROR);
+            MessageBoxW(None, &text, &HSTRING::from("AudCap"), MB_OK | MB_ICONERROR);
         }
     }
     result
@@ -106,7 +106,7 @@ pub fn run(config_path: PathBuf, page: Page) -> Result<()> {
 fn open(config_path: PathBuf, page: Page) -> Result<()> {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("MeetRec")
+        .with_title("AudCap")
         .with_inner_size(LogicalSize::new(1100.0, 720.0))
         .with_min_inner_size(LogicalSize::new(760.0, 520.0))
         .with_window_icon(tao::window::Icon::from_rgba(crate::icon::render(32, [220, 40, 40]), 32, 32).ok())
@@ -127,7 +127,7 @@ fn open(config_path: PathBuf, page: Page) -> Result<()> {
         .with_drag_drop_handler(|_| true)
         .with_navigation_handler(|url| is_app_url(&url))
         .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
-        .with_asynchronous_custom_protocol("meetrec".into(), move |_id, request, responder| {
+        .with_asynchronous_custom_protocol("audcap".into(), move |_id, request, responder| {
             // Off the UI thread: the folder picker blocks, and big audio reads take a moment.
             let host = Arc::clone(&host);
             std::thread::spawn(move || responder.respond(web_api::handle(host.as_ref(), &request)));
@@ -150,11 +150,11 @@ mod tests {
 
     #[test]
     fn only_the_app_origin_may_load_in_the_window() {
-        assert!(is_app_url("http://meetrec.localhost/#/settings"));
-        assert!(is_app_url("http://meetrec.localhost/api/audio?id=a.opus"));
+        assert!(is_app_url("http://audcap.localhost/#/settings"));
+        assert!(is_app_url("http://audcap.localhost/api/audio?id=a.opus"));
         assert!(!is_app_url("file:///C:/Users/me/Documents/a.opus"));
         assert!(!is_app_url("https://example.com/"));
-        assert!(!is_app_url("http://meetrec.localhost.example.com/"));
+        assert!(!is_app_url("http://audcap.localhost.example.com/"));
         assert!(!is_app_url("http://127.0.0.1:8765/api/state"));
     }
 }

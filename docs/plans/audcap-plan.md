@@ -14,7 +14,7 @@ left channel and system audio on the right** (lets the transcript app label "Me"
 "Others" without diarization).
 
 ## Global Constraints
-- One exe `meetrec.exe`: default = tray process (no GUI stack loaded, ~10–20 MB RAM);
+- One exe `audcap.exe`: default = tray process (no GUI stack loaded, ~10–20 MB RAM);
   `--settings` = egui settings window that edits `config.toml`; tray reloads on mtime change.
 - Threads: mic capture, loopback capture → mixer/encoder → `.opus.part`; mic-usage detector
   (2 s poll) → controller state machine ← tray menu / hotkeys / config reload.
@@ -44,7 +44,7 @@ left channel and system audio on the right** (lets the transcript app label "Me"
   Tooltip elapsed + app. Menu: Start/Stop, Pause/Resume, Split now, Add marker,
   ✓ Auto-record, Capture ▸ (Mic/System/Both), Open recordings folder, Settings…, Quit.
   Hotkeys Ctrl+Alt+R/P/S/M. Toast on auto-start (`tauri-winrt-notification`).
-- Config `%APPDATA%\MeetRec\config.toml`: capture_mode, mic_device, output_dir,
+- Config `%APPDATA%\AudCap\config.toml`: capture_mode, mic_device, output_dir,
   bitrate_kbps, auto_record, trigger_apps, release_grace_secs, min_duration_secs, hotkeys,
   start_with_windows.
 - Misc: single-instance named mutex; autostart HKCU Run; `tracing` + rolling file;

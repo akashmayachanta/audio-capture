@@ -435,7 +435,7 @@ wheels = [
 ]
 
 [[package]]
-name = "meetrec-transcriber"
+name = "audcap-transcriber"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

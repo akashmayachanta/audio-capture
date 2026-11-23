@@ -583,13 +583,13 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// Plays a 48 kHz mono 16-bit WAV (`MEETREC_TEST_WAV`) through the capture at
+    /// Plays a 48 kHz mono 16-bit WAV (`AUDCAP_TEST_WAV`) through the capture at
     /// real-time speed and prints each phrase's text as the service returns it.
     #[test]
-    #[ignore = "needs the speech service with a model loaded, and MEETREC_TEST_WAV"]
+    #[ignore = "needs the speech service with a model loaded, and AUDCAP_TEST_WAV"]
     fn phrases_of_a_wav_are_transcribed_while_it_plays() {
         use ringbuf::traits::{Producer, Split};
-        let wav = std::fs::read(std::env::var("MEETREC_TEST_WAV").expect("MEETREC_TEST_WAV")).unwrap();
+        let wav = std::fs::read(std::env::var("AUDCAP_TEST_WAV").expect("AUDCAP_TEST_WAV")).unwrap();
         let data = wav.windows(4).position(|w| w == b"data").expect("a data chunk") + 8;
         let samples: Vec<f32> = wav[data..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
         let dir = tempfile::tempdir().unwrap();

@@ -1,8 +1,8 @@
 // Start/Stop of the transcriber process from the window. The transcriber API
-// being reachable is the truth; meetrec.exe only knows about a process it
+// being reachable is the truth; audcap.exe only knows about a process it
 // started (to report one that exited right away).
 
-/** meetrec.exe `GET /api/transcriber`. */
+/** audcap.exe `GET /api/transcriber`. */
 export type Launch = { running: boolean; exit_code: number | null; log_tail: string; dir: string | null }
 
 export type ServiceState = {

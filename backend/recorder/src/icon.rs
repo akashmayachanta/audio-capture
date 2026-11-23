@@ -1,4 +1,4 @@
-//! The MeetRec mark: a rounded square in a colour with a white sound wave
+//! The AudCap mark: a rounded square in a colour with a white sound wave
 //! (vertical bars). Used for the tray (state colours) and, via `#[path]` from
 //! build.rs, for the exe icon, so it has no dependencies.
 

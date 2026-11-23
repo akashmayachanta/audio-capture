@@ -1,14 +1,14 @@
 @echo off
-rem Installs the latest release build of MeetRec (build it with build.ps1 first)
+rem Installs the latest release build of AudCap (build it with build.ps1 first)
 rem into C:\Drive\Software\Apps\audio-capture:
-rem   1. stops the transcriber and every running MeetRec (tray and window)
+rem   1. stops the transcriber and every running AudCap (tray and window)
 rem   2. deletes the old exe there and the obsolete build folders from before the
 rem      x86_64-pc-windows-msvc target (repo target\, backend\recorder\target\release|debug)
 rem   3. copies the new exe, links transcriber\ to the repo's, starts the tray.
 rem With "Start with Windows" on, the new tray points the sign-in entry at itself.
 setlocal
 set "REPO=%~dp0"
-set "SRC=%REPO%backend\recorder\target\x86_64-pc-windows-msvc\release\meetrec.exe"
+set "SRC=%REPO%backend\recorder\target\x86_64-pc-windows-msvc\release\audcap.exe"
 set "DEST=C:\Drive\Software\Apps\audio-capture"
 
 if not exist "%SRC%" (
@@ -28,12 +28,12 @@ powershell -NoProfile -Command ^
   "  $root = if ($parent -and $parent.Name -eq 'uv.exe') { $parent.ProcessId } else { $_.ProcessId };" ^
   "  taskkill /PID $root /T /F | Out-Null };"
 
-echo Stopping MeetRec (an open recording is finalized as "recovered" on the next start)...
+echo Stopping AudCap (an open recording is finalized as "recovered" on the next start)...
 powershell -NoProfile -Command ^
-  "$p = Get-Process meetrec -ErrorAction SilentlyContinue; $p | Stop-Process -Force; $p | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue"
+  "$p = Get-Process audcap -ErrorAction SilentlyContinue; $p | Stop-Process -Force; $p | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue"
 
 echo Deleting old files...
-if exist "%DEST%\meetrec.exe" del /F /Q "%DEST%\meetrec.exe"
+if exist "%DEST%\audcap.exe" del /F /Q "%DEST%\audcap.exe"
 for %%D in ("%REPO%target" "%REPO%backend\recorder\target\release" "%REPO%backend\recorder\target\debug") do (
     if exist "%%~D" (
         rmdir /S /Q "%%~D"
@@ -42,17 +42,17 @@ for %%D in ("%REPO%target" "%REPO%backend\recorder\target\release" "%REPO%backen
 )
 
 if not exist "%DEST%" mkdir "%DEST%"
-copy /Y "%SRC%" "%DEST%\meetrec.exe" >nul
+copy /Y "%SRC%" "%DEST%\audcap.exe" >nul
 if errorlevel 1 (
     echo Copying to "%DEST%" failed.
     pause
     exit /b 1
 )
-echo Copied to %DEST%\meetrec.exe
+echo Copied to %DEST%\audcap.exe
 
 rem The window's Start button looks for transcriber\ next to the exe: link it to
 rem the repo's, so the copy shares its Python environment and settings.toml.
 if not exist "%DEST%\transcriber" mklink /J "%DEST%\transcriber" "%REPO%backend\transcriber" >nul && echo Linked %DEST%\transcriber to the repo's transcriber.
 
-start "" "%DEST%\meetrec.exe"
-echo Started MeetRec from %DEST%. Start the transcriber from its window (Settings - Transcription).
+start "" "%DEST%\audcap.exe"
+echo Started AudCap from %DEST%. Start the transcriber from its window (Settings - Transcription).

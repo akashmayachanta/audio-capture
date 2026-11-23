@@ -1,4 +1,4 @@
-"""Decodes a MeetRec recording into one 16 kHz mono float32 array per speaker.
+"""Decodes a AudCap recording into one 16 kHz mono float32 array per speaker.
 
 Stereo files carry the mic on the left and system audio on the right; mono
 files carry whichever the sidecar's channel map names ("mono": "mic" | "system").

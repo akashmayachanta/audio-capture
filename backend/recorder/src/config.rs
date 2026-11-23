@@ -1,4 +1,4 @@
-//! `%APPDATA%\MeetRec\config.toml`. Every field has a default, so a partial (or
+//! `%APPDATA%\AudCap\config.toml`. Every field has a default, so a partial (or
 //! missing) file is fine.
 
 use std::path::{Path, PathBuf};
@@ -99,7 +99,7 @@ impl Default for Config {
             capture_mode: CaptureMode::Both,
             mic_device: String::new(),
             system_device: String::new(),
-            output_dir: documents.join("MeetRec"),
+            output_dir: documents.join("AudCap"),
             bitrate_kbps: 24,
             auto_record: true,
             trigger_apps: KNOWN_APPS.iter().map(|s| s.to_string()).collect(),
@@ -189,17 +189,17 @@ fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// `%APPDATA%\MeetRec`.
+/// `%APPDATA%\AudCap`.
 pub fn app_dir() -> PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.config_dir().to_path_buf())
         .unwrap_or_else(std::env::temp_dir)
-        .join("MeetRec")
+        .join("AudCap")
 }
 
-/// `MEETREC_CONFIG` overrides the location (handy for testing).
+/// `AUDCAP_CONFIG` overrides the location (handy for testing).
 pub fn config_path() -> PathBuf {
-    std::env::var_os("MEETREC_CONFIG").map(PathBuf::from).unwrap_or_else(|| app_dir().join("config.toml"))
+    std::env::var_os("AUDCAP_CONFIG").map(PathBuf::from).unwrap_or_else(|| app_dir().join("config.toml"))
 }
 
 #[cfg(test)]
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(c.hotkeys.pause, "ctrl+alt+P");
         assert_eq!(c.hotkeys.split, "ctrl+alt+S");
         assert_eq!(c.hotkeys.marker, "ctrl+alt+M");
-        assert!(c.output_dir.ends_with("MeetRec"));
+        assert!(c.output_dir.ends_with("AudCap"));
     }
 
     #[test]

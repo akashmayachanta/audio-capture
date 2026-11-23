@@ -41,7 +41,7 @@
       <svg class="size-[22px] text-brand" viewBox="0 0 100 100" aria-hidden="true">
         <rect x="3" y="3" width="94" height="94" rx="24" fill="currentColor" />
         <g fill="#fff"><rect x="22.0" y="37" width="6.2" height="26" rx="3.1" /><rect x="34.5" y="27" width="6.2" height="46" rx="3.1" /><rect x="46.9" y="19" width="6.2" height="62" rx="3.1" /><rect x="59.3" y="27" width="6.2" height="46" rx="3.1" /><rect x="71.8" y="37" width="6.2" height="26" rx="3.1" /></g>
-      </svg>MeetRec
+      </svg>AudCap
     </div>
     <nav class="flex flex-1 gap-1">
       {#each [['recordings', 'Recordings'], ['settings', 'Settings']] as [key, label] (key)}

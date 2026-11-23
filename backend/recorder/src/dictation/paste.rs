@@ -449,7 +449,7 @@ mod tests {
     #[test]
     #[ignore = "needs an interactive desktop; overwrites the clipboard"]
     fn a_non_text_clipboard_is_typed_over_and_left_alone() {
-        let format = live::register(w!("MeetRecTestPrivateFormat"));
+        let format = live::register(w!("AudCapTestPrivateFormat"));
         live::roundtrip_with(
             "typed not pasted",
             || live::set_private_format(format),

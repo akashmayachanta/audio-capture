@@ -56,6 +56,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "audcap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audioadapter-buffers",
+ "audiopus_sys",
+ "chrono",
+ "directories",
+ "global-hotkey",
+ "http",
+ "include_dir",
+ "ogg",
+ "rfd",
+ "ringbuf",
+ "rubato",
+ "serde",
+ "serde_json",
+ "tao",
+ "tauri-winrt-notification",
+ "tempfile",
+ "toml 1.1.8+spec-1.1.0",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "tray-icon",
+ "uuid",
+ "wasapi",
+ "windows",
+ "winreg",
+ "winresource",
+ "wry",
+]
+
+[[package]]
 name = "audio-codec-algorithms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1421,40 +1455,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
-]
-
-[[package]]
-name = "meetrec"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "audioadapter-buffers",
- "audiopus_sys",
- "chrono",
- "directories",
- "global-hotkey",
- "http",
- "include_dir",
- "ogg",
- "rfd",
- "ringbuf",
- "rubato",
- "serde",
- "serde_json",
- "tao",
- "tauri-winrt-notification",
- "tempfile",
- "toml 1.1.8+spec-1.1.0",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "tray-icon",
- "uuid",
- "wasapi",
- "windows",
- "winreg",
- "winresource",
- "wry",
 ]
 
 [[package]]

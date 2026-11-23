@@ -14,7 +14,7 @@
 
 - No git commits, branches or pushes (project rule). Steps have no commit step.
 - No test cases for `backend/transcriber` (project rule). Each task is verified by a live run.
-- Live runs use `MEETREC_TRANSCRIBER_SETTINGS` pointing at a scratch `settings.toml` with a scratch `cache_dir` and `recordings_dir`; the user's cache in `%LOCALAPPDATA%\MeetRec\transcriber` is only read (copy `models\underdog-bark-3.0\model.bark` and `hf\` from it).
+- Live runs use `AUDCAP_TRANSCRIBER_SETTINGS` pointing at a scratch `settings.toml` with a scratch `cache_dir` and `recordings_dir`; the user's cache in `%LOCALAPPDATA%\AudCap\transcriber` is only read (copy `models\underdog-bark-3.0\model.bark` and `hf\` from it).
 - Never execute downloaded code; downloads stay pinned to revisions.
 - Cache files are written to a temp name and renamed.
 - Run Python from PowerShell in `backend/transcriber` with `.venv\Scripts\python.exe`.
@@ -22,7 +22,7 @@
 ## Review Focus
 
 - First load interrupted mid-conversion: next load must redo it, not read a partial file (temp + rename; Task 1 and 2 verification deletes/creates a `.tmp` leftover).
-- `device = "auto"` on a machine with no OpenVINO `GPU` device, or where compiling fails: Bark loads on CPU and the log says why (Task 2 verification forces a failure with env `MEETREC_BARK_FAIL_GPU=1`... not shipped: instead verify by calling the fallback with a bogus device name in the check script).
+- `device = "auto"` on a machine with no OpenVINO `GPU` device, or where compiling fails: Bark loads on CPU and the log says why (Task 2 verification forces a failure with env `AUDCAP_BARK_FAIL_GPU=1`... not shipped: instead verify by calling the fallback with a bogus device name in the check script).
 - `device = "gpu"` without a GPU: load fails with a readable error in `/api/state` `engine.error`, no fallback.
 - Last batch of a job smaller than `BATCH`, and a single 0.3 s piece: texts line up with pieces (Task 2 check runs 1, 2 and 5 pieces).
 - Old `settings.toml` with `device = "cpu"` keeps working unchanged.
