@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod convert;
+pub mod extract;
 pub mod device;
 pub mod mixer;
 

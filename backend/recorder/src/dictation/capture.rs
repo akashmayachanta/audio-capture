@@ -87,25 +87,44 @@ fn pump<W: Write>(
     Ok(frames)
 }
 
-#[derive(Default)]
 struct Shared {
     stop: AtomicBool,
     /// The encoder or the disk failed; nothing more will be written.
     dead: AtomicBool,
     level: AtomicU32,
+    /// The segmenter's learned noise floor (f32 bits); `NO_FLOOR` while unknown.
+    floor: AtomicU32,
     samples: AtomicU64,
+}
+
+const NO_FLOOR: u32 = u32::MAX;
+
+impl Default for Shared {
+    fn default() -> Self {
+        Shared {
+            stop: AtomicBool::new(false),
+            dead: AtomicBool::new(false),
+            level: AtomicU32::new(0),
+            floor: AtomicU32::new(NO_FLOOR),
+            samples: AtomicU64::new(0),
+        }
+    }
 }
 
 /// `phrases` gets every phrase as it completes and the last one when the recording
 /// stops; it is dropped (closing the channel) when this returns.
-fn run(mut cons: HeapCons<f32>, mut writer: Writer, shared: &Shared, phrases: Option<Sender<Vec<f32>>>) -> Result<Writer> {
-    let mut segmenter = Segmenter::default();
+fn run(mut cons: HeapCons<f32>, mut writer: Writer, shared: &Shared, phrases: Option<Sender<Vec<f32>>>, mut segmenter: Segmenter) -> Result<Writer> {
     loop {
         // Read the flag first, so one more drain always follows the stop request.
         let stop = shared.stop.load(Ordering::Acquire);
         let mut on_frame = |frame: &[f32]| {
-            if let (Some(tx), Some(phrase)) = (&phrases, segmenter.push(frame)) {
+            // Always segmented (even without `phrases`), so the noise floor is learned.
+            let phrase = segmenter.push(frame);
+            if let (Some(tx), Some(phrase)) = (&phrases, phrase) {
                 let _ = tx.send(phrase);
+            }
+            if let Some(floor) = segmenter.learned_floor() {
+                shared.floor.store(floor.to_bits(), Ordering::Relaxed);
             }
         };
         match pump(&mut cons, &mut writer, &shared.level, &mut on_frame) {
@@ -136,17 +155,20 @@ pub struct Capture {
 impl Capture {
     /// Opens the configured mic (the Windows default when none is chosen) and starts recording.
     /// `phrases` receives each phrase as it is spoken; the channel closes when the recording ends.
-    pub fn start(cfg: &Config, now: DateTime<Local>, phrases: Option<Sender<Vec<f32>>>) -> Result<Capture> {
+    /// `seed`: the noise floor learned by the previous dictation (`noise_floor`).
+    pub fn start(cfg: &Config, now: DateTime<Local>, phrases: Option<Sender<Vec<f32>>>, seed: Option<f32>) -> Result<Capture> {
         let (prod, cons) = HeapRb::<f32>::new(SAMPLE_RATE as usize * 2).split();
         let mic_id = Some(cfg.mic_device.clone()).filter(|s| !s.is_empty());
         let stream = CaptureStream::spawn(Source::Mic, mic_id, prod);
-        Self::with_ring(clip_path(&cfg.output_dir, now), cons, cfg.bitrate_kbps as i32 * 1000, Some(stream), phrases)
+        let segmenter = Segmenter::new(cfg.dictation.noise_margin_db as f32, seed);
+        Self::with_ring(clip_path(&cfg.output_dir, now), cons, cfg.bitrate_kbps as i32 * 1000, Some(stream), phrases, segmenter)
     }
 
     /// A capture fed from a ring instead of the microphone, for live tests.
     #[cfg(test)]
     pub(super) fn from_ring(cfg: &Config, now: DateTime<Local>, cons: HeapCons<f32>, phrases: Option<Sender<Vec<f32>>>) -> Result<Capture> {
-        Self::with_ring(clip_path(&cfg.output_dir, now), cons, cfg.bitrate_kbps as i32 * 1000, None, phrases)
+        let segmenter = Segmenter::new(cfg.dictation.noise_margin_db as f32, None);
+        Self::with_ring(clip_path(&cfg.output_dir, now), cons, cfg.bitrate_kbps as i32 * 1000, None, phrases, segmenter)
     }
 
     /// The part everything but the microphone: audio arrives through `cons`.
@@ -156,6 +178,7 @@ impl Capture {
         bitrate_bps: i32,
         stream: Option<CaptureStream>,
         phrases: Option<Sender<Vec<f32>>>,
+        segmenter: Segmenter,
     ) -> Result<Capture> {
         std::fs::create_dir_all(path.parent().context("clip path has no folder")?)?;
         let part = append_ext(&path, ".part");
@@ -167,7 +190,7 @@ impl Capture {
         let s = shared.clone();
         let thread = std::thread::Builder::new()
             .name("dictation-capture".into())
-            .spawn(move || run(cons, writer, &s, phrases))
+            .spawn(move || run(cons, writer, &s, phrases, segmenter))
             .context("spawn the dictation thread")?;
         Ok(Capture { stream, shared, thread: Some(thread), part, path })
     }
@@ -179,6 +202,11 @@ impl Capture {
 
     pub fn elapsed_secs(&self) -> f64 {
         self.shared.samples.load(Ordering::Relaxed) as f64 / SAMPLE_RATE as f64
+    }
+
+    /// The room's noise floor as learned so far; `None` until it is known.
+    pub fn noise_floor(&self) -> Option<f32> {
+        Some(self.shared.floor.load(Ordering::Relaxed)).filter(|b| *b != NO_FLOOR).map(f32::from_bits)
     }
 
     /// False once the encoder or the disk has failed.
@@ -265,7 +293,7 @@ mod tests {
     /// A capture fed from the returned producer instead of a microphone.
     fn capture_in(dir: &Path) -> (Capture, HeapProd<f32>) {
         let (prod, cons) = HeapRb::<f32>::new(SAMPLE_RATE as usize * 4).split();
-        let cap = Capture::with_ring(clip_path(dir, at()), cons, 24_000, None, None).unwrap();
+        let cap = Capture::with_ring(clip_path(dir, at()), cons, 24_000, None, None, Segmenter::default()).unwrap();
         (cap, prod)
     }
 
@@ -275,7 +303,7 @@ mod tests {
         let (prod, cons) = HeapRb::<f32>::new(SAMPLE_RATE as usize * 6).split();
         let mut prod: HeapProd<f32> = prod;
         let (tx, rx) = std::sync::mpsc::channel();
-        let cap = Capture::with_ring(clip_path(dir.path(), at()), cons, 24_000, None, Some(tx)).unwrap();
+        let cap = Capture::with_ring(clip_path(dir.path(), at()), cons, 24_000, None, Some(tx), Segmenter::default()).unwrap();
         // A phrase, a pause, then words that are still being spoken at the release.
         prod.push_slice(&sine(secs(1.0), 0.3));
         prod.push_slice(&vec![0.0; secs(1.0)]);
@@ -310,6 +338,18 @@ mod tests {
         let mut out = Vec::new();
         walk(dir, &mut out);
         out
+    }
+
+    #[test]
+    fn the_noise_floor_is_learned_even_without_phrases() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cap, mut prod) = capture_in(dir.path());
+        assert_eq!(cap.noise_floor(), None, "unknown at first");
+        let hum = sine(secs(1.5), 0.025);
+        prod.push_slice(&hum);
+        let want = level_of(&hum[..FRAME]);
+        wait_for("the floor", || cap.noise_floor().is_some_and(|f| (f - want).abs() < 0.02));
+        cap.cancel(false);
     }
 
     fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
@@ -417,7 +457,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = Config::default();
         cfg.output_dir = dir.path().to_path_buf();
-        let cap = Capture::start(&cfg, Local::now(), None).unwrap();
+        let cap = Capture::start(&cfg, Local::now(), None, None).unwrap();
         std::thread::sleep(Duration::from_millis(1300));
         let clip = cap.finish(true).unwrap().expect("a clip");
         assert!(clip.secs > 0.8, "{}", clip.secs);

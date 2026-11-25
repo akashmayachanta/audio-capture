@@ -15,7 +15,9 @@ const base: Config = {
   hotkeys: { start_stop: 'ctrl+alt+R', pause: 'ctrl+alt+P', split: 'ctrl+alt+S', marker: 'ctrl+alt+M' },
   start_with_windows: false,
   transcriber_dir: '',
-  dictation: { enabled: true, hold_key: 'RightAlt', toggle_key: 'RightAlt', keep_audio: true, max_secs: 300, paste_mode: 'live' },
+  web_port: 8766,
+  speech_api: { base_url: '', api_key: '', model: '' },
+  dictation: { enabled: true, hold_key: 'RightAlt', toggle_key: 'RightAlt', keep_audio: true, max_secs: 300, paste_mode: 'live', engine: 'local', noise_margin_db: 10 },
 }
 
 test('an untouched form takes everything from the file', () => {

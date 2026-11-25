@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fmtDuration, groupByDay } from '../lib/format'
-  import type { Row } from '../lib/recordings'
+  import type { Job, Row } from '../lib/recordings'
   import Icon from './Icon.svelte'
 
   let {
@@ -17,7 +17,7 @@
     canTranscribe: boolean
     onselect: (id: string) => void
     ontranscribe: (id: string) => void
-    oncancel: (jobId: number) => void
+    oncancel: (job: Job) => void
     ondelete: (id: string) => void
   } = $props()
 
@@ -48,7 +48,7 @@
             <div class="h-full bg-accent transition-[width] duration-500" style={`width:${Math.round(r.job!.progress * 100)}%`}></div>
           </div>
           <span class="min-w-10 text-xs text-muted tabular-nums">{r.job!.state === 'queued' ? 'Queued' : `${Math.round(r.job!.progress * 100)}%`}</span>
-          <button class="btn btn-sm" onclick={(e) => (e.stopPropagation(), oncancel(r.job!.id))}>Cancel</button>
+          <button class="btn btn-sm" onclick={(e) => (e.stopPropagation(), oncancel(r.job!))}>Cancel</button>
         {:else}
           {#if r.transcribed}
             <span class="inline-flex items-center gap-1 rounded-full bg-ok/12 px-2 py-0.5 text-[11.5px] font-medium text-ok"><Icon name="check" size={13} /> Transcript</span>

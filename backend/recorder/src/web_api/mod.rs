@@ -3,6 +3,7 @@
 
 pub mod assets;
 pub mod files;
+pub mod server;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -30,6 +31,25 @@ pub trait Host {
     /// Waits for the next key press: (`KeyId` name, display name). `None` when
     /// nothing was pressed in time.
     fn detect_key(&self, timeout: Duration) -> Option<(String, String)>;
+    /// The speech-API job queue, when it lives in this process (the tray).
+    fn speech_jobs(&self) -> Option<&crate::speech_api::Jobs> {
+        None
+    }
+    /// Answers a `/api/speech/*` job request elsewhere (the window: the tray's
+    /// loopback server), when `speech_jobs` is `None`.
+    fn forward_speech(&self, _req: &Request<Vec<u8>>) -> Resp {
+        error(StatusCode::SERVICE_UNAVAILABLE, "speech-API jobs are not available here")
+    }
+    /// Settings' mic test (the window only): opens `device` (`None` = default),
+    /// replacing a running test.
+    fn mic_test_start(&self, _device: Option<String>, _margin_db: f32) -> Result<(), String> {
+        Err("The microphone test runs in the AudCap window.".into())
+    }
+    /// The running test's latest numbers; `None` when none runs.
+    fn mic_test_view(&self) -> Option<crate::dictation::mic_test::MicView> {
+        None
+    }
+    fn mic_test_stop(&self) {}
 }
 
 /// How long Settings' "Detect" waits for a key.
@@ -62,11 +82,13 @@ pub fn handle(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
         }),
         "transcript" => match *m {
             Method::GET => transcript(host, req),
+            Method::PUT => put_transcript(host, req),
             Method::DELETE => delete_transcript(host, req),
             _ => error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
         },
         "recording" => only(Method::DELETE, &|| delete_recording(host, req)),
         "audio" => only(Method::GET, &|| audio(host, req)),
+        "pcm" => only(Method::GET, &|| pcm(host, req)),
         "open-folder" => only(Method::POST, &|| open_folder(host, req.body())),
         "pick-folder" => only(Method::POST, &|| {
             let picked = host.pick_folder(&output_dir(host));
@@ -87,6 +109,49 @@ pub fn handle(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
                 Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e),
             },
         }),
+        "speech/settings" => match *m {
+            Method::GET => speech_settings(&Config::load_or_create(&host.config_path())),
+            Method::PUT => put_speech_settings(host, req.body()),
+            _ => error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+        },
+        "speech/test" => only(Method::POST, &|| match serde_json::from_slice::<crate::config::SpeechApi>(req.body()) {
+            Ok(cfg) => ok_json(serde_json::to_value(crate::speech_api::test(&cfg)).unwrap()),
+            Err(e) => error(StatusCode::BAD_REQUEST, &format!("invalid settings: {e}")),
+        }),
+        "speech/jobs" | "speech/transcribe" | "speech/cancel" => {
+            let want = if route == "speech/jobs" { Method::GET } else { Method::POST };
+            if *m != want {
+                return error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+            }
+            match host.speech_jobs() {
+                Some(jobs) => speech_jobs(host, jobs, route, req.body()),
+                None => host.forward_speech(req),
+            }
+        }
+        "mic-test" => match *m {
+            Method::GET => ok_json(json!({ "test": host.mic_test_view() })),
+            Method::POST => {
+                #[derive(serde::Deserialize, Default)]
+                #[serde(default)]
+                struct Start {
+                    device: String,
+                    noise_margin_db: Option<u32>,
+                }
+                let Ok(b) = serde_json::from_slice::<Start>(req.body()) else {
+                    return error(StatusCode::BAD_REQUEST, "bad mic test request");
+                };
+                let margin = b.noise_margin_db.unwrap_or(Config::default().dictation.noise_margin_db).clamp(3, 30);
+                match host.mic_test_start(Some(b.device).filter(|d| !d.is_empty()), margin as f32) {
+                    Ok(()) => ok_json(json!({ "ok": true })),
+                    Err(e) => error(StatusCode::SERVICE_UNAVAILABLE, &e),
+                }
+            }
+            Method::DELETE => {
+                host.mic_test_stop();
+                ok_json(json!({ "ok": true }))
+            }
+            _ => error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+        },
         "detect-key" => only(Method::POST, &|| {
             // Esc cancels a dictation, so it cannot be a dictation key: pressing it cancels Detect.
             let key = host.detect_key(DETECT_KEY_TIMEOUT).filter(|(id, _)| id.as_str() != "Escape");
@@ -120,6 +185,56 @@ fn put_config(host: &dyn Host, body: &[u8]) -> Resp {
     }
 }
 
+/// `[speech_api]` with `configured`.
+fn speech_settings(c: &Config) -> Resp {
+    let mut v = serde_json::to_value(&c.speech_api).unwrap();
+    v["configured"] = json!(c.speech_api.configured());
+    ok_json(v)
+}
+
+/// Saves `[speech_api]` only; the rest of config.toml stays as it is.
+fn put_speech_settings(host: &dyn Host, body: &[u8]) -> Resp {
+    let api = match serde_json::from_slice::<crate::config::SpeechApi>(body) {
+        Ok(a) => a.sanitized(),
+        Err(e) => return error(StatusCode::BAD_REQUEST, &format!("invalid settings: {e}")),
+    };
+    let mut c = Config::load_or_create(&host.config_path());
+    c.speech_api = api;
+    match c.save(&host.config_path()) {
+        Ok(()) => speech_settings(&c),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save: {e}")),
+    }
+}
+
+/// `speech/jobs` -> `{jobs, configured, model}`; `speech/transcribe` `{id}` -> the job;
+/// `speech/cancel` `{job_id}` -> `{cancelled}`.
+fn speech_jobs(host: &dyn Host, jobs: &crate::speech_api::Jobs, route: &str, body: &[u8]) -> Resp {
+    #[derive(Deserialize)]
+    struct Transcribe {
+        id: String,
+    }
+    #[derive(Deserialize)]
+    struct Cancel {
+        job_id: u64,
+    }
+    let c = Config::load_or_create(&host.config_path());
+    match route {
+        "speech/jobs" => ok_json(json!({ "jobs": jobs.list(), "configured": c.speech_api.configured(), "model": c.speech_api.model })),
+        "speech/transcribe" => match serde_json::from_slice::<Transcribe>(body) {
+            Ok(t) => match jobs.submit(&c.output_dir, &t.id, &c.speech_api) {
+                Ok(job) => ok_json(serde_json::to_value(job).unwrap()),
+                Err(e) if e == "no such recording" => error(StatusCode::NOT_FOUND, &e),
+                Err(e) => error(StatusCode::CONFLICT, &e),
+            },
+            Err(e) => error(StatusCode::BAD_REQUEST, &format!("invalid request: {e}")),
+        },
+        _ => match serde_json::from_slice::<Cancel>(body) {
+            Ok(b) => ok_json(json!({ "cancelled": jobs.cancel(b.job_id) })),
+            Err(e) => error(StatusCode::BAD_REQUEST, &format!("invalid request: {e}")),
+        },
+    }
+}
+
 /// The recording `?id=` names, if it resolves inside `output_dir`.
 fn recording(host: &dyn Host, req: &Request<Vec<u8>>) -> Option<PathBuf> {
     let id = query_param(req.uri().query().unwrap_or(""), "id")?;
@@ -131,6 +246,52 @@ fn transcript(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
     match std::fs::read(files::sibling(&opus, "md")) {
         Ok(bytes) => response(StatusCode::OK, "text/markdown; charset=utf-8", bytes),
         Err(_) => error(StatusCode::NOT_FOUND, "not transcribed yet"),
+    }
+}
+
+/// Writes the recording's `.md` (a transcript made elsewhere, e.g. by a speech
+/// API): UTF-8 Markdown in the body, written as temp + rename.
+fn put_transcript(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
+    let Some(opus) = recording(host, req) else { return not_found() };
+    if std::str::from_utf8(req.body()).is_err() {
+        return error(StatusCode::BAD_REQUEST, "the transcript must be UTF-8 text");
+    }
+    let md = files::sibling(&opus, "md");
+    let tmp = files::sibling(&opus, "md.tmp");
+    let written = std::fs::write(&tmp, req.body()).and_then(|()| std::fs::rename(&tmp, &md));
+    match written {
+        Ok(()) => ok_json(json!({})),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            error(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not write the transcript: {e}"))
+        }
+    }
+}
+
+/// Longest piece `GET /api/pcm` returns (16 kHz 16-bit: 15 min = 29 MB).
+const MAX_PCM_SECS: f64 = 900.0;
+
+/// `?id=&ch=&start=&secs=`: channel `ch` of the recording from `start` for
+/// `secs` seconds as 16 kHz mono WAV; `X-Audio-Secs` = the whole recording's
+/// length, `X-Audio-Channels` = its channel count. Past the end: an empty WAV.
+fn pcm(host: &dyn Host, req: &Request<Vec<u8>>) -> Resp {
+    let Some(opus) = recording(host, req) else { return not_found() };
+    let q = req.uri().query().unwrap_or("");
+    let num = |name: &str, default: f64| query_param(q, name).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(default);
+    let ch = num("ch", 0.0).max(0.0) as usize;
+    let (start, secs) = (num("start", 0.0).max(0.0), num("secs", MAX_PCM_SECS).clamp(0.0, MAX_PCM_SECS));
+    let file = match std::fs::File::open(&opus) {
+        Ok(f) => std::io::BufReader::new(f),
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not open the recording: {e}")),
+    };
+    match crate::audio::extract::extract(file, ch, start, secs) {
+        Ok(piece) => {
+            let mut r = response(StatusCode::OK, "audio/wav", crate::audio::extract::wav(&piece.samples, crate::audio::extract::OUT_RATE));
+            r.headers_mut().insert("x-audio-secs", format!("{:.3}", piece.total_secs).parse().unwrap());
+            r.headers_mut().insert("x-audio-channels", piece.channels.to_string().parse().unwrap());
+            r
+        }
+        Err(e) => error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
 }
 
@@ -272,6 +433,7 @@ mod tests {
         start_error: Option<String>,
         detected: Option<(String, String)>,
         detect_timeouts: RefCell<Vec<Duration>>,
+        mic_tests: RefCell<Vec<(Option<String>, f32)>>,
     }
 
     impl FakeHost {
@@ -285,6 +447,7 @@ mod tests {
                 start_error: None,
                 detected: None,
                 detect_timeouts: RefCell::new(Vec::new()),
+                mic_tests: RefCell::new(Vec::new()),
             };
             // Never point a test at the real recordings folder.
             let mut c = Config::default();
@@ -332,6 +495,17 @@ mod tests {
         fn detect_key(&self, timeout: Duration) -> Option<(String, String)> {
             self.detect_timeouts.borrow_mut().push(timeout);
             self.detected.clone()
+        }
+        fn mic_test_start(&self, device: Option<String>, margin_db: f32) -> Result<(), String> {
+            self.mic_tests.borrow_mut().push((device, margin_db));
+            Ok(())
+        }
+        fn mic_test_view(&self) -> Option<crate::dictation::mic_test::MicView> {
+            let running = self.mic_tests.borrow().last().is_some_and(|(d, _)| d.as_deref() != Some("stopped"));
+            running.then(|| crate::dictation::mic_test::MicView { level: 0.5, threshold: 0.3, speech: true, ..Default::default() })
+        }
+        fn mic_test_stop(&self) {
+            self.mic_tests.borrow_mut().push((Some("stopped".into()), 0.0));
         }
     }
 
@@ -504,6 +678,112 @@ mod tests {
     }
 
     #[test]
+    fn speech_settings_round_trip_without_touching_the_rest() {
+        let host = FakeHost::new();
+        let uri = format!("{BASE}/api/speech/settings");
+        assert_eq!(json(&handle(&host, &req("GET", &uri, "")))["configured"], false);
+        let r = handle(&host, &req("PUT", &uri, r#"{"base_url":" https://api.openai.com/v1/ ","api_key":"k","model":"whisper-1"}"#));
+        assert_eq!(r.status(), 200);
+        let v = json(&r);
+        assert_eq!((v["base_url"].as_str(), v["configured"].as_bool()), (Some("https://api.openai.com/v1"), Some(true)));
+        let saved = Config::load_or_create(&host.config_path());
+        assert_eq!(saved.speech_api.model, "whisper-1");
+        assert_eq!(saved.output_dir, host.out(), "the rest is kept");
+        assert_eq!(handle(&host, &req("PUT", &uri, "{nope")).status(), 400);
+    }
+
+    #[test]
+    fn speech_test_checks_the_values_sent() {
+        let host = FakeHost::new();
+        let v = json(&handle(&host, &req("POST", &format!("{BASE}/api/speech/test"), r#"{"base_url":"","model":""}"#)));
+        assert_eq!(v["ok"], false);
+    }
+
+    #[test]
+    fn speech_jobs_use_the_hosts_queue_or_are_forwarded() {
+        struct JobHost(FakeHost, crate::speech_api::Jobs);
+        impl Host for JobHost {
+            fn config_path(&self) -> PathBuf {
+                self.0.config_path()
+            }
+            fn devices(&self) -> (Vec<DeviceInfo>, Vec<DeviceInfo>) {
+                self.0.devices()
+            }
+            fn pick_folder(&self, s: &Path) -> Option<PathBuf> {
+                self.0.pick_folder(s)
+            }
+            fn open_folder(&self, d: &Path) {
+                self.0.open_folder(d)
+            }
+            fn exe_path(&self) -> PathBuf {
+                self.0.exe_path()
+            }
+            fn start_transcriber(&self, d: &Path) -> Result<(), String> {
+                self.0.start_transcriber(d)
+            }
+            fn transcriber_status(&self) -> LaunchStatus {
+                self.0.transcriber_status()
+            }
+            fn detect_key(&self, t: Duration) -> Option<(String, String)> {
+                self.0.detect_key(t)
+            }
+            fn speech_jobs(&self) -> Option<&crate::speech_api::Jobs> {
+                Some(&self.1)
+            }
+        }
+        let host = JobHost(FakeHost::new(), crate::speech_api::Jobs::new());
+        host.0.recording("a.opus", b"OggS");
+        let v = json(&handle(&host, &req("GET", &format!("{BASE}/api/speech/jobs"), "")));
+        assert_eq!((v["jobs"].as_array().unwrap().len(), v["configured"].as_bool()), (0, Some(false)));
+        let r = handle(&host, &req("POST", &format!("{BASE}/api/speech/transcribe"), r#"{"id":"a.opus"}"#));
+        assert_eq!(r.status(), 409, "not set up");
+        assert_eq!(handle(&host, &req("GET", &format!("{BASE}/api/speech/transcribe"), "")).status(), 405);
+        let v = json(&handle(&host, &req("POST", &format!("{BASE}/api/speech/cancel"), r#"{"job_id":7}"#)));
+        assert_eq!(v["cancelled"], false);
+        // Without a queue (the window), job requests go to forward_speech.
+        let plain = FakeHost::new();
+        assert_eq!(handle(&plain, &req("GET", &format!("{BASE}/api/speech/jobs"), "")).status(), 503);
+    }
+
+    #[test]
+    fn put_transcript_writes_the_md() {
+        let host = FakeHost::new();
+        let opus = host.recording("2026/10/a.opus", b"OggS");
+        let uri = format!("{BASE}/api/transcript?id=2026/10/a.opus");
+        let r = handle(&host, &req("PUT", &uri, "# Transcript: a
+"));
+        assert_eq!(r.status(), 200);
+        assert_eq!(std::fs::read_to_string(opus.with_extension("md")).unwrap(), "# Transcript: a
+");
+        assert!(!opus.with_extension("md.tmp").exists());
+        let bad = http::Request::builder().method("PUT").uri(&uri).body(vec![0xff, 0xfe]).unwrap();
+        assert_eq!(handle(&host, &bad).status(), 400);
+        let r = handle(&host, &req("PUT", &format!("{BASE}/api/transcript?id=2026/10/missing.opus"), "x"));
+        assert_eq!(r.status(), 404);
+    }
+
+    #[test]
+    fn pcm_serves_a_wav_piece_or_an_error() {
+        let host = FakeHost::new();
+        let mut w = crate::encode::opus_ogg::OggOpusWriter::new(Vec::new(), 2, 24_000, &[]).unwrap();
+        for _ in 0..50 {
+            w.write_frame(&[0.0; 1920]).unwrap();
+        }
+        host.recording("2026/10/a.opus", &w.finish().unwrap());
+        let r = handle(&host, &req("GET", &format!("{BASE}/api/pcm?id=2026/10/a.opus&ch=1&start=0&secs=0.5"), ""));
+        assert_eq!(r.status(), 200);
+        assert_eq!(header(&r, "content-type"), "audio/wav");
+        assert_eq!(header(&r, "x-audio-channels"), "2");
+        assert_eq!(r.body().len(), 44 + 8000 * 2);
+        let secs: f64 = header(&r, "x-audio-secs").parse().unwrap();
+        assert!((secs - 1.0).abs() < 0.05, "{secs}");
+        let r = handle(&host, &req("GET", &format!("{BASE}/api/pcm?id=2026/10/a.opus&ch=5"), ""));
+        assert_eq!(r.status(), 400);
+        host.recording("2026/10/junk.opus", b"OggS");
+        assert_eq!(handle(&host, &req("GET", &format!("{BASE}/api/pcm?id=2026/10/junk.opus"), "")).status(), 400);
+    }
+
+    #[test]
     fn delete_recording_removes_it_with_its_sidecar_and_transcript() {
         let host = FakeHost::new();
         let opus = host.recording("2026/10/gone.opus", b"OggS");
@@ -618,6 +898,23 @@ mod tests {
         assert_eq!(v["key"]["name"], "Right Alt");
         assert_eq!(*host.detect_timeouts.borrow(), vec![Duration::from_secs(5); 2]);
         assert_eq!(handle(&host, &req("GET", &uri, "")).status(), 405);
+    }
+
+    #[test]
+    fn the_mic_test_starts_reports_and_stops() {
+        let host = FakeHost::new();
+        let uri = format!("{BASE}/api/mic-test");
+        assert!(json(&handle(&host, &req("GET", &uri, "")))["test"].is_null(), "none running");
+        let r = handle(&host, &req("POST", &uri, r#"{"device":"{mic-1}","noise_margin_db":99}"#));
+        assert_eq!(r.status(), 200);
+        handle(&host, &req("POST", &uri, r#"{"device":""}"#));
+        assert_eq!(*host.mic_tests.borrow(), vec![(Some("{mic-1}".to_string()), 30.0), (None, 10.0)], "clamped; empty = default mic");
+        let v = json(&handle(&host, &req("GET", &uri, "")));
+        assert_eq!(v["test"]["speech"], true);
+        assert_eq!(v["test"]["floor"], serde_json::Value::Null);
+        handle(&host, &req("DELETE", &uri, ""));
+        assert!(json(&handle(&host, &req("GET", &uri, "")))["test"].is_null());
+        assert_eq!(handle(&host, &req("POST", &uri, "nope")).status(), 400);
     }
 
     #[test]

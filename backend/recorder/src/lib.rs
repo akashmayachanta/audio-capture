@@ -14,5 +14,6 @@ pub mod autostart;
 pub mod power;
 pub mod recordings;
 pub mod transcriber;
+pub mod speech_api;
 pub mod web_api;
 pub mod window;

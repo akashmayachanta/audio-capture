@@ -6,12 +6,15 @@
   import Segmented from '../components/Segmented.svelte'
   import ServiceButton from '../components/ServiceButton.svelte'
   import Toggle from '../components/Toggle.svelte'
-  import { local, transcriber, type CaptureMode, type Config, type Device, type PasteMode } from '../lib/api'
+  import { local, transcriber, type CaptureMode, type Config, type DictationEngine, type Device, type PasteMode } from '../lib/api'
   import { joinTriggerApps, splitTriggerApps, type KnownApp } from '../lib/apps'
   import { rebase } from '../lib/config'
   import { keyOptions } from '../lib/keys'
   import { clampInt } from '../lib/numbers'
   import type { createTranscriber } from '../lib/transcriber.svelte'
+
+  import MicTest from '../components/MicTest.svelte'
+  import { dirtyTabs, tabFromHash, TABS } from '../lib/settingsTabs'
 
   let { tx, active = true }: { tx: ReturnType<typeof createTranscriber>; active?: boolean } = $props()
 
@@ -73,6 +76,13 @@
     return () => window.removeEventListener('focus', onFocus)
   })
 
+  let tab = $state(tabFromHash(location.hash))
+  onMount(() => {
+    const onHash = () => (tab = tabFromHash(location.hash))
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  })
+
   // Coming back to the tab.
   let wasActive = true // onMount does the first load
   $effect(() => {
@@ -89,10 +99,12 @@
           bitrate_kbps: clampInt(form.bitrate_kbps, 6, 128),
           release_grace_secs: clampInt(form.release_grace_secs, 1, 600),
           min_duration_secs: clampInt(form.min_duration_secs, 0, 3600),
+          dictation: { ...form.dictation, noise_margin_db: clampInt(form.dictation.noise_margin_db, 3, 30) },
         }
       : null,
   )
   const dirty = $derived(!!candidate && JSON.stringify(candidate) !== JSON.stringify(saved))
+  const unsaved = $derived(dirtyTabs(saved, candidate))
 
   async function save() {
     if (!candidate) return
@@ -130,6 +142,24 @@
   }
 
   /** Binds the next key pressed (the window waits about 5 s) to a dictation gesture. */
+  let showKey = $state(false)
+  let speechTesting = $state(false)
+  let speechTest = $state<{ ok: boolean; text: string } | null>(null)
+
+  async function testSpeech() {
+    if (!form) return
+    speechTesting = true
+    speechTest = null
+    try {
+      const r = await local.speechTest($state.snapshot(form.speech_api))
+      speechTest = { ok: r.ok, text: r.ok ? `${r.message} (${r.latency_ms} ms)` : r.message }
+    } catch (e) {
+      speechTest = { ok: false, text: (e as Error).message }
+    } finally {
+      speechTesting = false
+    }
+  }
+
   async function detect(field: DictationKey) {
     if (detecting) return
     detecting = field
@@ -167,6 +197,10 @@
     { field: 'toggle_key', label: 'Double-tap for hands-free', help: 'Double-tap to start, double-tap again to paste.' },
   ]
 
+  const DICTATION_ENGINES: { value: DictationEngine; label: string }[] = [
+    { value: 'local', label: 'Transcriber' },
+    { value: 'api', label: 'Speech API' },
+  ]
   const PASTE_MODES: { value: PasteMode; label: string }[] = [
     { value: 'live', label: 'While I speak' },
     { value: 'end', label: 'When I finish' },
@@ -186,9 +220,24 @@
       <p class="mt-1 text-muted">Changes apply to the tray right after you save.</p>
     </div>
 
+    <nav class="flex gap-1 border-b border-line" aria-label="Settings sections">
+      {#each TABS as section (section.id)}
+        <a
+          href={`#/settings/${section.id}`}
+          aria-current={tab === section.id ? 'page' : undefined}
+          class={[
+            '-mb-px flex items-center gap-1.5 border-b-2 px-3 pb-2 font-medium no-underline transition-colors',
+            tab === section.id ? 'border-accent text-fg' : 'border-transparent text-muted hover:text-fg',
+          ]}
+          >{section.label}{#if unsaved.has(section.id)}<span class="size-1.5 rounded-full bg-accent" title="Unsaved changes"></span>{/if}</a
+        >
+      {/each}
+    </nav>
+
     {#if loadError}
       <div class="hint"><Icon name="alert" size={16} /> Could not read settings: {loadError}</div>
-    {:else if form}
+    {/if}
+    {#if form && tab === 'recording'}
       <Card title="Capture" description="Your microphone is recorded as “Me”, what your speakers play as “Others”.">
         <Field label="Record">
           <Segmented label="Record" bind:value={form.capture_mode} options={MODES} />
@@ -262,6 +311,12 @@
         {/each}
       </Card>
 
+      <Card title="Startup">
+        <Toggle label="Start AudCap when I sign in to Windows" bind:checked={form.start_with_windows} />
+      </Card>
+    {/if}
+
+    {#if form && tab === 'dictation'}
       <Card title="Dictation" description="Talk into any text field: your words are typed where the cursor is.">
         {#snippet aside()}
           <Toggle label="Dictation" hideLabel bind:checked={form!.dictation.enabled} />
@@ -279,76 +334,123 @@
             </Field>
           {/each}
           <Field
+            label="Transcribe with"
+            help={form.dictation.engine === 'api'
+              ? form.speech_api.base_url && form.speech_api.model
+                ? 'The whole dictation is sent to the speech API when you stop talking, and pasted at once.'
+                : 'Set up the Speech API on the Transcription tab first.'
+              : 'The local transcriber turns each phrase into text while you keep talking.'}
+          >
+            <Segmented label="Transcribe with" bind:value={form.dictation.engine} options={DICTATION_ENGINES} />
+          </Field>
+          {#if form.dictation.engine === 'local'}
+          <Field
             label="Paste the text"
             help="“While I speak” types each phrase after a short pause, in hands-free mode. Hold to talk always pastes on release."
           >
             <Segmented label="Paste the text" bind:value={form.dictation.paste_mode} options={PASTE_MODES} />
           </Field>
+          {/if}
+          <Field
+            label="Speech margin"
+            help="How far above the room's noise your voice must be. Raise it if background noise keeps phrases from ending; lower it if quiet words are missed. Try it with the test below."
+          >
+            <input class="input w-20" type="number" min="3" max="30" bind:value={form.dictation.noise_margin_db} />
+            <span class="text-muted">dB</span>
+          </Field>
           <Toggle label="Keep the audio of each dictation" bind:checked={form.dictation.keep_audio} />
           <div class="hint hint-neutral">
             <span
-              >Dictation needs the speech service (the transcriber) with a model loaded. If it is not running, the first
-              dictation starts it. Esc cancels. Audio is kept in the “dictation” folder inside the recordings folder.</span
+              >{form.dictation.engine === 'api'
+                ? 'Dictation uses the Speech API set on the Transcription tab.'
+                : 'Dictation needs the speech service (the transcriber) with a model loaded. If it is not running, the first dictation starts it.'}
+              Esc cancels. Audio is kept in the “dictation” folder inside the recordings folder.</span
             >
           </div>
         </div>
       </Card>
 
-      <Card title="Startup">
-        <Toggle label="Start AudCap when I sign in to Windows" bind:checked={form.start_with_windows} />
-      </Card>
+      <MicTest device={form.mic_device} margin={clampInt(form.dictation.noise_margin_db, 3, 30)} {active} />
     {/if}
 
-    <Card title="Transcription" description="Runs in the separate transcriber; one model is kept in memory.">
-      {#snippet aside()}
-        <div class="flex items-center gap-2.5">
-          <span class={['rounded-full px-2.5 py-0.5 text-xs font-medium', t.online ? 'bg-ok/12 text-ok' : 'bg-panel-2 text-muted']}
-            >{t.online ? 'Online' : 'Offline'}</span
-          >
-          <ServiceButton {tx} small />
+    {#if form && tab === 'transcription'}
+      <Card
+        title="Speech API"
+        description="An OpenAI-compatible speech-to-text service, instead of the local transcriber. Recordings are sent to it a speaker at a time."
+      >
+        <Field label="Base URL" help="Up to /v1, e.g. https://api.openai.com/v1">
+          <input class="input min-w-[260px] flex-1" bind:value={form.speech_api.base_url} placeholder="https://api.openai.com/v1" spellcheck="false" autocomplete="off" />
+        </Field>
+        <Field label="API key" help="Leave blank if the server needs none.">
+          <input class="input min-w-[260px] flex-1" type={showKey ? 'text' : 'password'} bind:value={form.speech_api.api_key} spellcheck="false" autocomplete="off" />
+          <button class="btn btn-sm" onclick={() => (showKey = !showKey)}>{showKey ? 'Hide' : 'Show'}</button>
+        </Field>
+        <Field label="Model name" help="e.g. whisper-1, gpt-4o-transcribe">
+          <input class="input w-full max-w-[320px]" bind:value={form.speech_api.model} placeholder="whisper-1" spellcheck="false" autocomplete="off" />
+        </Field>
+        <div class="flex flex-wrap items-center gap-3">
+          <button class="btn" onclick={testSpeech} disabled={speechTesting}>{speechTesting ? 'Testing…' : 'Test connection'}</button>
+          {#if speechTest}
+            <span class={['text-[13px]', speechTest.ok ? 'text-ok' : 'text-danger']}>{speechTest.text}</span>
+          {/if}
         </div>
-      {/snippet}
-      {#if tx.service.failure}
-        <div class="hint"><Icon name="alert" size={16} /> <span class="whitespace-pre-wrap">{tx.service.failure}</span></div>
-      {/if}
-      {#if !t.online}
-        <div class="hint hint-neutral">
-          <span
-            >{tx.service.phase === 'starting'
-              ? 'Starting the transcriber… The first start sets up its Python environment and can take a few minutes.'
-              : 'Start the transcriber to load models and transcribe. Existing transcripts open without it. It keeps running after this window closes.'}</span
-          >
-        </div>
-      {/if}
-      {#if modelError}
-        <div class="hint"><Icon name="alert" size={16} /> {modelError}</div>
-      {/if}
-      {#each t.state?.models ?? [] as m (m.id)}
-        {@const e = t.state!.engine}
-        <div class="flex items-start gap-4 rounded-xl border border-line p-4">
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 font-medium">
-              {m.label}
-              {#if e.loading === m.id}
-                <span class="rounded-full bg-warn-soft px-2 py-0.5 text-[11.5px] text-warn">Loading…</span>
-              {:else if e.active === m.id && e.loaded === m.id}
-                <span class="rounded-full bg-ok/12 px-2 py-0.5 text-[11.5px] text-ok">Loaded</span>
-              {:else if e.active === m.id && e.error}
-                <span class="rounded-full bg-danger/12 px-2 py-0.5 text-[11.5px] text-danger" title={e.error}>Failed</span>
-              {/if}
-            </div>
-            <p class="mt-1 text-[12.5px] text-muted">{m.description}</p>
-            {#if e.active === m.id && e.error}<p class="mt-1 text-[12.5px] text-danger">{e.error}</p>{/if}
+      </Card>
+
+
+    {/if}
+
+    {#if tab === 'transcription'}
+      <Card title="Transcription" description="Runs in the separate transcriber; one model is kept in memory.">
+        {#snippet aside()}
+          <div class="flex items-center gap-2.5">
+            <span class={['rounded-full px-2.5 py-0.5 text-xs font-medium', t.online ? 'bg-ok/12 text-ok' : 'bg-panel-2 text-muted']}
+              >{t.online ? 'Online' : 'Offline'}</span
+            >
+            <ServiceButton {tx} small />
           </div>
-          <button
-            class="btn btn-sm"
-            disabled={!t.online || !!e.loading || e.loaded === m.id || jobsRunning}
-            title={jobsRunning ? 'Wait for the running transcription to finish' : undefined}
-            onclick={() => loadModel(m.id)}>Load</button
-          >
-        </div>
-      {/each}
-    </Card>
+        {/snippet}
+        {#if tx.service.failure}
+          <div class="hint"><Icon name="alert" size={16} /> <span class="whitespace-pre-wrap">{tx.service.failure}</span></div>
+        {/if}
+        {#if !t.online}
+          <div class="hint hint-neutral">
+            <span
+              >{tx.service.phase === 'starting'
+                ? 'Starting the transcriber… The first start sets up its Python environment and can take a few minutes.'
+                : 'Start the transcriber to load models and transcribe. Existing transcripts open without it. It keeps running after this window closes.'}</span
+            >
+          </div>
+        {/if}
+        {#if modelError}
+          <div class="hint"><Icon name="alert" size={16} /> {modelError}</div>
+        {/if}
+        {#each t.state?.models ?? [] as m (m.id)}
+          {@const e = t.state!.engine}
+          <div class="flex items-start gap-4 rounded-xl border border-line p-4">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 font-medium">
+                {m.label}
+                {#if e.loading === m.id}
+                  <span class="rounded-full bg-warn-soft px-2 py-0.5 text-[11.5px] text-warn">Loading…</span>
+                {:else if e.active === m.id && e.loaded === m.id}
+                  <span class="rounded-full bg-ok/12 px-2 py-0.5 text-[11.5px] text-ok">Loaded</span>
+                {:else if e.active === m.id && e.error}
+                  <span class="rounded-full bg-danger/12 px-2 py-0.5 text-[11.5px] text-danger" title={e.error}>Failed</span>
+                {/if}
+              </div>
+              <p class="mt-1 text-[12.5px] text-muted">{m.description}</p>
+              {#if e.active === m.id && e.error}<p class="mt-1 text-[12.5px] text-danger">{e.error}</p>{/if}
+            </div>
+            <button
+              class="btn btn-sm"
+              disabled={!t.online || !!e.loading || e.loaded === m.id || jobsRunning}
+              title={jobsRunning ? 'Wait for the running transcription to finish' : undefined}
+              onclick={() => loadModel(m.id)}>Load</button
+            >
+          </div>
+        {/each}
+      </Card>
+    {/if}
   </div>
 </div>
 

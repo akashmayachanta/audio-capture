@@ -6,8 +6,10 @@
   import ServiceButton from '../components/ServiceButton.svelte'
   import TranscriptView from '../components/TranscriptView.svelte'
   import { local, transcriber } from '../lib/api'
+  import Segmented from '../components/Segmented.svelte'
+  import { loadEngine, pickEngine, saveEngine, type Engine } from '../lib/engine'
   import { fmtDuration } from '../lib/format'
-  import { mergeRecordings, sameFolder, type LocalRecording } from '../lib/recordings'
+  import { mergeRecordings, sameFolder, type Job, type LocalRecording } from '../lib/recordings'
   import type { createTranscriber } from '../lib/transcriber.svelte'
 
   let { tx, active = true }: { tx: ReturnType<typeof createTranscriber>; active?: boolean } = $props()
@@ -21,6 +23,30 @@
   let time = $state(0)
   let playing = $state(false)
   let player: Player | undefined = $state()
+
+  // Speech API (OpenAI-compatible, set up in Settings): its jobs run in the tray.
+  let apiJobs = $state<Job[]>([])
+  let apiConfigured = $state(false)
+  let apiModel = $state('')
+  let apiError = $state('')
+  let chosen = $state<string | null>(loadEngine())
+  let apiActive = new Set<number>()
+
+  async function pollSpeech() {
+    try {
+      const r = await local.speechJobs()
+      apiJobs = r.jobs
+      apiConfigured = r.configured
+      apiModel = r.model
+      apiError = ''
+    } catch (e) {
+      apiError = (e as Error).message
+    }
+    const now = new Set(apiJobs.filter((j) => j.state === 'queued' || j.state === 'running').map((j) => j.id))
+    const finished = [...apiActive].some((id) => !now.has(id))
+    apiActive = now
+    if (finished) void refresh()
+  }
 
   async function refresh() {
     try {
@@ -37,6 +63,13 @@
 
   onMount(() => {
     void refresh()
+    void pollSpeech()
+    let speechTimer: ReturnType<typeof setTimeout>
+    const loopSpeech = async () => {
+      if (active && document.visibilityState === 'visible') await pollSpeech()
+      speechTimer = setTimeout(loopSpeech, apiActive.size ? 2000 : 5000)
+    }
+    speechTimer = setTimeout(loopSpeech, 2000)
     const onFocus = () => void refresh()
     window.addEventListener('focus', onFocus)
     // A recording made while the window stays in front (hotkey, auto-record) shows up by itself.
@@ -46,13 +79,17 @@
     return () => {
       window.removeEventListener('focus', onFocus)
       clearInterval(timer)
+      clearTimeout(speechTimer)
     }
   })
 
-  // Back from Settings: the recordings folder may have changed.
+  // Back from Settings: the recordings folder or the speech API may have changed.
   let wasActive = true // onMount does the first load
   $effect(() => {
-    if (active && !wasActive) void refresh()
+    if (active && !wasActive) {
+      void refresh()
+      void pollSpeech()
+    }
     wasActive = active
   })
 
@@ -62,11 +99,35 @@
   })
 
   const t = $derived(tx.current)
-  const rows = $derived(mergeRecordings(recordings, t.online ? (t.state?.jobs ?? []) : []))
+  const rows = $derived(mergeRecordings(recordings, [...(t.online ? (t.state?.jobs ?? []) : []), ...apiJobs]))
   const rec = $derived(rows.find((r) => r.id === selected) ?? null)
   const folderMismatch = $derived(!!(t.online && t.state && outputDir && !sameFolder(t.state.recordings_dir, outputDir)))
   const modelReady = $derived(!!t.state?.engine.active)
-  const canTranscribe = $derived(t.online && modelReady && !folderMismatch)
+  const engine = $derived<Engine>(pickEngine(chosen, apiConfigured, t.online))
+  const canTranscribe = $derived(engine === 'api' ? apiConfigured : t.online && modelReady && !folderMismatch)
+
+  function chooseEngine(e: Engine) {
+    chosen = e
+    saveEngine(e)
+  }
+
+  function transcribe(id: string) {
+    return act(async () => {
+      if (engine === 'api') {
+        await local.speechTranscribe(id)
+        await pollSpeech()
+      } else await transcriber.transcribe(id)
+    })
+  }
+
+  function cancel(job: Job) {
+    return act(async () => {
+      if (job.source === 'api') {
+        await local.speechCancel(job.id)
+        await pollSpeech()
+      } else await transcriber.cancel(job.id)
+    })
+  }
 
   async function act(f: () => Promise<unknown>) {
     actionError = ''
@@ -116,7 +177,25 @@
     </header>
 
     <div class="flex flex-col gap-1.5 px-3 [&:not(:empty)]:pb-1.5">
-      {#if !t.online}
+      {#if apiConfigured}
+        <div class="flex items-center gap-2 text-[12.5px] text-muted">
+          <span class="flex-1">Transcribe with</span>
+          <Segmented
+            small
+            label="Transcribe with"
+            bind:value={() => engine, (v: Engine) => chooseEngine(v)}
+            options={[
+              { value: 'local', label: 'Transcriber' },
+              { value: 'api', label: apiModel || 'Speech API' },
+            ]}
+          />
+        </div>
+      {/if}
+      {#if engine === 'api'}
+        {#if apiError}
+          <div class="hint"><Icon name="alert" size={16} /> {apiError}</div>
+        {/if}
+      {:else if !t.online}
         <div class="hint hint-neutral items-center">
           <span class="flex-1">{tx.service.phase === 'starting' ? 'Starting the transcriber…' : 'Transcription is offline.'}</span>
           <ServiceButton {tx} small />
@@ -151,8 +230,8 @@
           {selected}
           {canTranscribe}
           onselect={(id) => (selected = id)}
-          ontranscribe={(id) => act(() => transcriber.transcribe(id))}
-          oncancel={(jobId) => act(() => transcriber.cancel(jobId))}
+          ontranscribe={transcribe}
+          oncancel={cancel}
           ondelete={deleteRecording}
         />
       {/if}

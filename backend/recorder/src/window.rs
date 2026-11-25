@@ -38,6 +38,8 @@ struct WindowHost {
     picking: Mutex<()>,
     /// Held while Detect waits for a key, so two requests don't race for the same press.
     detecting: Mutex<()>,
+    /// Settings' microphone test, while it runs.
+    mic_test: Mutex<Option<crate::dictation::mic_test::MicTestRun>>,
 }
 
 impl Host for WindowHost {
@@ -86,6 +88,34 @@ impl Host for WindowHost {
         let _one_at_a_time = self.detecting.try_lock().ok()?;
         crate::dictation::rawinput::detect_next_key(timeout).map(|(key, name)| (key.to_string(), name))
     }
+
+    fn mic_test_start(&self, device: Option<String>, margin_db: f32) -> Result<(), String> {
+        let mut slot = self.mic_test.lock().map_err(|_| "mic test lock poisoned".to_string())?;
+        slot.take(); // the old one releases the mic first
+        *slot = Some(crate::dictation::mic_test::MicTestRun::start(device, margin_db));
+        Ok(())
+    }
+
+    fn mic_test_view(&self) -> Option<crate::dictation::mic_test::MicView> {
+        let mut slot = self.mic_test.lock().ok()?;
+        let view = slot.as_ref().and_then(|t| t.view());
+        if view.is_none() {
+            slot.take();
+        }
+        view
+    }
+
+    fn mic_test_stop(&self) {
+        if let Ok(mut slot) = self.mic_test.lock() {
+            slot.take();
+        }
+    }
+
+    /// Speech-API jobs run in the tray (they outlive this window): ask it.
+    fn forward_speech(&self, req: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
+        let port = crate::config::Config::load_or_create(&self.config_path).web_port;
+        web_api::server::forward(port, req)
+    }
 }
 
 fn webview_data_dir() -> PathBuf {
@@ -114,7 +144,7 @@ fn open(config_path: PathBuf, page: Page) -> Result<()> {
         .context("create window")?;
 
     let log = crate::config::app_dir().join("logs").join("transcriber.log");
-    let host = Arc::new(WindowHost { config_path, transcriber: crate::transcriber::Launcher::new(log), picking: Mutex::new(()), detecting: Mutex::new(()) });
+    let host = Arc::new(WindowHost { config_path, transcriber: crate::transcriber::Launcher::new(log), picking: Mutex::new(()), detecting: Mutex::new(()), mic_test: Mutex::new(None) });
     let fragment = match page {
         Page::Recordings => "#/recordings",
         Page::Settings => "#/settings",

@@ -35,6 +35,7 @@ pub mod client;
 pub mod controller;
 pub mod gesture;
 pub mod keys;
+pub mod mic_test;
 pub mod overlay;
 pub mod overlay_scene;
 pub mod paste;
@@ -176,6 +177,24 @@ fn clip_worker(bytes: Vec<u8>, cancel: Arc<AtomicBool>, tx: Sender<WorkerMsg>) {
     }
 }
 
+/// `[dictation] engine = "api"`: the whole clip to the speech API in one request.
+fn api_worker(api: config::SpeechApi, bytes: Vec<u8>, cancel: Arc<AtomicBool>, tx: Sender<WorkerMsg>) {
+    let _ = tx.send(WorkerMsg::Phase(Phase::Transcribing));
+    let result = crate::speech_api::dictate(&api, &bytes);
+    if cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    match result {
+        Ok(text) => {
+            let _ = tx.send(WorkerMsg::Piece(text));
+            let _ = tx.send(WorkerMsg::Done(Ok(1)));
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::Done(Err(e)));
+        }
+    }
+}
+
 /// Hold-to-talk and hands-free dictation: keys in, text pasted out. Driven by `poll`.
 pub struct Dictation {
     cfg: Config,
@@ -201,6 +220,8 @@ pub struct Dictation {
     hands_free: bool,
     /// The whole clip, sent if the recording produced no phrase by itself.
     fallback: Option<Vec<u8>>,
+    /// The room's noise floor from the last dictation: the next one starts with it.
+    noise_floor: Option<f32>,
 }
 
 impl Dictation {
@@ -243,6 +264,7 @@ impl Dictation {
             live_pasted: false,
             hands_free: false,
             fallback: None,
+            noise_floor: None,
         };
         match Overlay::new() {
             Ok(o) => d.overlay = Some(o),
@@ -293,7 +315,7 @@ impl Dictation {
 
     fn cancel_all(&mut self) {
         self.queue.clear();
-        if let Some(c) = self.capture.take() {
+        if let Some(c) = self.take_capture() {
             c.cancel(false);
         }
         self.cancel_work();
@@ -373,7 +395,7 @@ impl Dictation {
                 }
                 WorkerMsg::Done(Err(e)) => {
                     self.cancel_work();
-                    if let Some(c) = self.capture.take() {
+                    if let Some(c) = self.take_capture() {
                         // Still listening: there is no point in going on.
                         c.cancel(self.cfg.dictation.keep_audio);
                         self.queue.push_back(Input::CaptureFailed(e));
@@ -423,8 +445,12 @@ impl Dictation {
         self.queue.push_back(Input::Gesture(g));
     }
 
+    fn uses_api(&self) -> bool {
+        self.cfg.dictation.engine == config::DictationEngine::Api
+    }
+
     fn ensure_server(&mut self, env: &Env) {
-        if env.service == ServiceState::Down {
+        if !self.uses_api() && env.service == ServiceState::Down {
             if let Err(e) = env.speech.start(env.transcriber_dir, None) {
                 self.notices.push(e);
             }
@@ -439,12 +465,17 @@ impl Dictation {
                 self.cancel_work();
                 self.live_pasted = false;
                 self.hands_free = false;
+                // The API gets the whole clip at the end: no phrases, no stream worker.
                 let (phrases_tx, phrases) = mpsc::channel();
-                match Capture::start(&self.cfg, Local::now(), Some(phrases_tx)) {
+                let phrases_tx = (!self.uses_api()).then_some(phrases_tx);
+                let streaming = phrases_tx.is_some();
+                match Capture::start(&self.cfg, Local::now(), phrases_tx, self.noise_floor) {
                     Ok(c) => {
                         self.capture = Some(c);
-                        let bitrate_bps = self.cfg.bitrate_kbps as i32 * 1000;
-                        self.spawn_work("dictation-stream", move |cancel, tx| stream_worker(phrases, bitrate_bps, cancel, tx));
+                        if streaming {
+                            let bitrate_bps = self.cfg.bitrate_kbps as i32 * 1000;
+                            self.spawn_work("dictation-stream", move |cancel, tx| stream_worker(phrases, bitrate_bps, cancel, tx));
+                        }
                     }
                     Err(e) => self.queue.push_back(Input::CaptureFailed(format!("Could not start the microphone: {e}"))),
                 }
@@ -462,13 +493,13 @@ impl Dictation {
             }
             Action::DiscardCapture => {
                 self.cancel_work();
-                if let Some(c) = self.capture.take() {
+                if let Some(c) = self.take_capture() {
                     c.cancel(false);
                 }
             }
             Action::CancelCapture => {
                 self.cancel_work();
-                if let Some(c) = self.capture.take() {
+                if let Some(c) = self.take_capture() {
                     c.cancel(keep_audio);
                 }
             }
@@ -482,13 +513,20 @@ impl Dictation {
     /// Stops the mic. The phrases spoken so far are already transcribed (or on
     /// their way); the capture hands out the last one as it stops.
     fn finish(&mut self, env: &Env) {
-        let Some(capture) = self.capture.take() else {
+        let Some(capture) = self.take_capture() else {
             self.cancel_work();
             self.queue.push_back(Input::TranscriptFailed("There was no recording to transcribe.".into()));
             return;
         };
         self.ensure_server(env);
         match capture.finish(self.cfg.dictation.keep_audio) {
+            Ok(Some(clip)) if self.uses_api() => {
+                let api = self.cfg.speech_api.clone();
+                self.spawn_work("dictation-api", move |cancel, tx| api_worker(api, clip.bytes, cancel, tx));
+                if let Some(o) = &mut self.overlay {
+                    o.show(Phase::Transcribing);
+                }
+            }
             Ok(Some(clip)) => {
                 if self.work.is_some() {
                     self.fallback = Some(clip.bytes);
@@ -508,6 +546,13 @@ impl Dictation {
                 self.queue.push_back(Input::TranscriptFailed(format!("Could not save the dictation: {e}")));
             }
         }
+    }
+
+    /// Takes the capture out, remembering the noise floor it learned for the next dictation.
+    fn take_capture(&mut self) -> Option<Capture> {
+        let c = self.capture.take()?;
+        self.noise_floor = c.noise_floor().or(self.noise_floor);
+        Some(c)
     }
 
     /// Queues `text` for the paste thread.
@@ -551,6 +596,15 @@ mod tests {
         assert!(!pastes_live(PasteMode::Live, false), "hold-to-talk: the key is still down");
         assert!(!pastes_live(PasteMode::End, true));
         assert!(!pastes_live(PasteMode::End, false));
+    }
+
+    #[test]
+    fn the_api_worker_reports_a_missing_setup_as_the_error() {
+        let (tx, rx) = mpsc::channel();
+        api_worker(config::SpeechApi::default(), vec![1, 2, 3], Arc::new(AtomicBool::new(false)), tx);
+        let msgs: Vec<WorkerMsg> = rx.try_iter().collect();
+        assert!(matches!(&msgs[0], WorkerMsg::Phase(Phase::Transcribing)));
+        assert!(matches!(&msgs[1], WorkerMsg::Done(Err(e)) if e.contains("Settings")), "{}", msgs.len());
     }
 
     #[test]

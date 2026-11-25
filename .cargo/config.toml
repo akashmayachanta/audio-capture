@@ -3,6 +3,13 @@
 # backend/recorder/target/x86_64-pc-windows-msvc/{debug,release}/.
 target = "x86_64-pc-windows-msvc"
 
+[target.x86_64-pc-windows-msvc]
+# Static C runtime: the exe runs without the VC++ Redistributable (vcruntime140.dll).
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [env]
 # libopus (via audiopus_sys) declares an old cmake_minimum_required that CMake 4 rejects.
-CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+# 3.15 (not 3.5) turns on CMP0091, so CMake stops adding /MD to the per-config flags
+# and the toolchain file below can choose the static runtime.
+CMAKE_POLICY_VERSION_MINIMUM = "3.15"
+CMAKE_TOOLCHAIN_FILE = { value = ".cargo/static-crt.cmake", relative = true }

@@ -5,7 +5,11 @@ import type { Job, LocalRecording } from './recordings'
 import type { Launch } from './service'
 
 export type CaptureMode = 'both' | 'mic' | 'system'
+
+/** backend/recorder/src/config.rs `SpeechApi`: an OpenAI-compatible speech-to-text API. */
+export type SpeechApi = { base_url: string; api_key: string; model: string }
 export type PasteMode = 'live' | 'end'
+export type DictationEngine = 'local' | 'api'
 
 /** backend/recorder/src/config.rs `Config`. */
 export type Config = {
@@ -21,6 +25,9 @@ export type Config = {
   hotkeys: { start_stop: string; pause: string; split: string; marker: string }
   start_with_windows: boolean
   transcriber_dir: string
+  /** Loopback port of the recordings API for other local apps; 0 = off. Not edited in Settings. */
+  web_port: number
+  speech_api: SpeechApi
   dictation: {
     enabled: boolean
     hold_key: string
@@ -29,7 +36,22 @@ export type Config = {
     max_secs: number
     /** live = hands-free pastes each phrase as it is transcribed; end = everything when the dictation ends. */
     paste_mode: PasteMode
+    /** local = the transcriber, phrase by phrase; api = `speech_api`, the whole clip when it ends. */
+    engine: DictationEngine
+    /** Speech must be this many dB above the room's noise floor (3–30). */
+    noise_margin_db: number
   }
+}
+
+/** backend/recorder/src/dictation/mic_test.rs `MicView`; levels on a 0..1 scale (-50..0 dBFS). */
+export type MicView = {
+  level: number
+  floor: number | null
+  threshold: number
+  speech: boolean
+  phrases: number
+  last_phrase_secs: number | null
+  secs: number
 }
 
 export type ConfigResponse = { config: Config; known_apps: string[] }
@@ -96,7 +118,17 @@ export const local = {
   /** Starts `uv run python -m app` in the transcriber folder (hidden; it outlives the window). */
   startTranscriber: () => call<{ dir: string }>('/api/transcriber/start', send('POST', {})),
   transcriberLaunch: () => call<Launch>('/api/transcriber'),
+  /** Tries the values as given (saved or not) with a second of silence. */
+  speechTest: (api: SpeechApi) => call<{ ok: boolean; message: string; latency_ms: number }>('/api/speech/test', send('POST', api)),
+  /** Speech-API jobs (they run in the tray, which this window asks). */
+  speechJobs: () => call<{ jobs: Job[]; configured: boolean; model: string }>('/api/speech/jobs'),
+  speechTranscribe: (id: string) => call<Job>('/api/speech/transcribe', send('POST', { id })),
+  speechCancel: (jobId: number) => call<{ cancelled: boolean }>('/api/speech/cancel', send('POST', { job_id: jobId })),
   /** Waits up to 5 s for a key press; null when none came (or Esc was pressed). */
+  /** Settings' mic test (window only): replaces a running one. It stops when not polled for 5 s. */
+  micTestStart: (device: string, noise_margin_db: number) => call<{ ok: boolean }>('/api/mic-test', send('POST', { device, noise_margin_db })),
+  micTest: () => call<{ test: MicView | null }>('/api/mic-test'),
+  micTestStop: () => call<{ ok: boolean }>('/api/mic-test', { method: 'DELETE' }),
   detectKey: () => call<{ key: { id: string; name: string } | null }>('/api/detect-key', send('POST', {})),
 }
 

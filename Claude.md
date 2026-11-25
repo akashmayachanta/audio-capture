@@ -48,8 +48,12 @@ build.ps1               npm build, then cargo build in backend/recorder
   `Cargo.toml` builds `audiopus_sys` at opt-level 2 in dev: at opt-level 0 the
   cmake crate configures CMake "Debug" → `/MDd` → unresolved `__imp__CrtDbgReportW`.
   After changing any of these env vars, `cargo clean -p audiopus_sys`.
-- `.cargo/config.toml` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5` so libopus
-  (built statically by `audiopus_sys`) configures under CMake 4.
+- Static C runtime: `.cargo/config.toml` adds `+crt-static` (no VC++ Redistributable
+  needed; `dumpbin /dependents` lists only system DLLs). libopus follows via
+  `CMAKE_POLICY_VERSION_MINIMUM=3.15` (CMake 4 rejects libopus' 3.1 minimum; 3.15
+  turns on CMP0091 so `/MD` leaves the per-config flags) and
+  `CMAKE_TOOLCHAIN_FILE=.cargo/static-crt.cmake` (`CMAKE_MSVC_RUNTIME_LIBRARY`).
+  Without them it links with LNK4217 warnings and a `/MD` libopus.
 - `.cargo/config.toml` also sets `[build] target = "x86_64-pc-windows-msvc"`, so
   output is under `target\x86_64-pc-windows-msvc\{debug,release}\`.
 - In `backend/recorder`: `cargo build --release` → `target\x86_64-pc-windows-msvc\release\audcap.exe`.
@@ -101,6 +105,7 @@ Raw Input keys ─▶ dictation gesture ─▶ dictation controller ─▶ captu
                   (polled from the app loop; overlay = Win32 layered window)  └─ phrases (cut at pauses) ─▶ stream thread ─▶ POST /api/dictate per phrase ─▶ paste thread
 
 window process: WebView2 page ──audcap:// custom protocol──▶ web_api (config, devices, recordings, audio, transcripts)
+tray process: web_api::server on 127.0.0.1:8766 ──▶ web_api (recordings, audio, transcripts, start transcriber) ◀── daily-driver backend
                               └──fetch 127.0.0.1:8765──────▶ transcriber API (jobs, models), optional
 ```
 
@@ -124,17 +129,21 @@ Paths below are under `backend/recorder/`.
 | `src/transcriber.rs` | `find_dir` (config `transcriber_dir`, else `transcriber/` or `backend/transcriber/` up from the exe); `Launcher` spawns `uv run python -m app` hidden (log `logs/transcriber.log`), `status()` = running / exit code + log tail |
 | `src/config.rs` | `config.toml` (serde defaults, sanitizing, mtime watcher) |
 | `src/window.rs` | the window: tao event loop, wry WebView, async `audcap` custom protocol → `web_api::handle` on a thread per request; `WindowHost` (devices on an MTA thread, rfd folder picker, Explorer); message box if WebView2 fails |
-| `src/web_api/mod.rs` | **pure** router `handle(&dyn Host, &Request) -> Response`: `GET/PUT /api/config` (sanitized save, `{config, known_apps}`), `GET /api/devices`, `GET /api/recordings` (`{output_dir, recordings}`), `GET /api/transcript?id=` (raw `.md`; `DELETE` removes it, the recording stays), `DELETE /api/recording?id=` (`.opus` + sidecar + `.md`), `GET /api/audio?id=` (Range → 206, open-ended capped at 2 MiB, bad → 416), `POST /api/open-folder`, `POST /api/pick-folder`, `GET /api/transcriber` (launch status + `dir`), `POST /api/transcriber/start`, `POST /api/detect-key` (waits 5 s for a key → `{key: {id, name}}` or `{key: null}`; Esc = null); other paths → assets |
+| `src/web_api/mod.rs` | **pure** router `handle(&dyn Host, &Request) -> Response`: `GET/PUT /api/config` (sanitized save, `{config, known_apps}`), `GET /api/devices`, `GET /api/recordings` (`{output_dir, recordings}`), `GET /api/transcript?id=` (raw `.md`; `PUT` writes it, `DELETE` removes it, the recording stays), `GET /api/pcm?id=&ch=&start=&secs=` (WAV piece, ≤ 900 s), `/api/speech/settings` (GET/PUT `[speech_api]` only), `POST /api/speech/test`, `/api/speech/{jobs,transcribe,cancel}` (`Host::speech_jobs`, else `Host::forward_speech`), `DELETE /api/recording?id=` (`.opus` + sidecar + `.md`), `GET /api/audio?id=` (Range → 206, open-ended capped at 2 MiB, bad → 416), `POST /api/open-folder`, `POST /api/pick-folder`, `GET /api/transcriber` (launch status + `dir`), `POST /api/transcriber/start`, `POST /api/detect-key` (waits 5 s for a key → `{key: {id, name}}` or `{key: null}`; Esc = null), `/api/mic-test` (POST `{device, noise_margin_db}` starts, GET `{test: MicView|null}`, DELETE stops; `Host::mic_test_*`, window only); other paths → assets |
 | `src/web_api/files.rs` | id (path relative to `output_dir`, `/`-separated) → `.opus` inside the root only; `parse_range`; `speakers` from the sidecar channel map; `RecordingJson` |
+| `src/web_api/server.rs` | loopback HTTP in the **tray** process (also `forward`: the window's client for it) on `127.0.0.1:<web_port>` (default 8766, 0 = off; read at tray start) for other local apps (daily-driver's Recordings page): hand-written HTTP/1.1, one request per connection, thread each; `route` = Host-header check (DNS rebinding) + `ROUTES` allow-list (`recordings`, `transcript`, `recording`, `audio`, `pcm`, `transcriber`, `transcriber/start`, `speech/*`) → `web_api::handle` with `ServerHost` (config + its own transcriber `Launcher`; desktop actions are no-ops); `read_request`/`encode` are pure |
+| `src/speech_api.rs` | transcription through an OpenAI-compatible API (`[speech_api]`, `ureq`): `Jobs` (queue + one worker thread, lives in the tray's `ServerHost`; the window forwards `/api/speech/{jobs,transcribe,cancel}` to the tray with `server::forward`), `run` (per speaker: 10-min `audio::extract` pieces, silent ones skipped, `verbose_json` segments, falls back to `json` + 30-s slices when the model rejects it; writes `.md` temp + rename), pure `multipart`, `parse_reply` (drops `no_speech_prob` ≥ 0.8), `error_message`, `to_markdown` (transcriber layout); `test` = 1 s of silence; `dictate` = one dictation clip → text (whole clip, silent = "" unsent) |
+| `src/audio/extract.rs` | one channel of a recording as 16 kHz mono WAV for a time window: Ogg packets before it only counted (`opus_packet_get_nb_samples`), 80 ms pre-roll, libopus multistream decode, 63-tap FIR + ÷3 decimation; `X-Audio-Secs` total |
 | `src/web_api/assets.rs` | embedded `frontend/dist` (`include_dir!`), content types |
 | `src/recordings.rs` | listing `output_dir` with sidecars and `.md` presence; skips the top-level `dictation/` folder (`DICTATION_DIR`, `is_dictation_root`) |
 | `src/autostart.rs` | HKCU `Run` key (path of the running tray exe) |
 | `src/power.rs` | suspend/resume notifications (closes recording before sleep) |
-| `src/dictation/mod.rs` | `Dictation`: owns everything below at runtime; `poll(now)` (called from the app loop) drains keys → gesture → controller, executes actions, returns toast texts; `apply_config` on hot-reload; auto-starts the speech service, never stops it. Streaming: `stream_worker` transcribes each phrase while the user still talks (in order, one request at a time); `paste_mode` `live` pastes each phrase as it arrives in hands-free mode only (hold-to-talk always pastes on release: the held key would corrupt Ctrl+V), `end` pastes everything at the end; if no phrase was found the whole clip is sent (`clip_worker`); one paste thread keeps the order |
+| `src/dictation/mod.rs` | `Dictation`: owns everything below at runtime; `poll(now)` (called from the app loop) drains keys → gesture → controller, executes actions, returns toast texts; `apply_config` on hot-reload; auto-starts the speech service, never stops it. Streaming: `stream_worker` transcribes each phrase while the user still talks (in order, one request at a time); `paste_mode` `live` pastes each phrase as it arrives in hands-free mode only (hold-to-talk always pastes on release: the held key would corrupt Ctrl+V), `end` pastes everything at the end; if no phrase was found the whole clip is sent (`clip_worker`); `engine = "api"`: no phrases or speech service, `api_worker` sends the whole clip to `speech_api::dictate` on release; one paste thread keeps the order |
 | `src/dictation/keys.rs` | **pure** `KeyId` (`RightAlt`, `F13`, `vk:0xNN`): parse / from Raw Input / display name; drops the fake AltGr Ctrl and VK 0xFF |
 | `src/dictation/gesture.rs` | **pure** hold / tap / double-tap detector (hold ≥ 300 ms, overlay after 150 ms, double-tap gap ≤ 400 ms; another key cancels) |
 | `src/dictation/controller.rs` | **pure** dictation state machine (idle / hold / toggle / transcribing) → actions |
-| `src/dictation/segmenter.rs` | **pure** phrase cutter on 20 ms frames: a phrase ends after 0.6 s of silence (0.2 s padding kept), or at 15 s at the quietest frame of the last 3 s; `flush` gives the tail; `level_of` |
+| `src/dictation/segmenter.rs` | **pure** phrase cutter on 20 ms frames: a phrase ends after 0.6 s of silence (0.2 s padding kept), or at 15 s at the quietest frame of the last 3 s; `flush` gives the tail; `level_of`. Adaptive threshold (`NoiseFloor`): floor = quietest frame of the last 3 s (unknown for the first 1 s unless seeded), threshold = floor + `noise_margin_db`, clamped to [-44, -20] dBFS; buffered frames are re-judged when it moves. `Dictation` seeds each capture with the floor the previous one learned |
+| `src/dictation/mic_test.rs` | Settings' **Test microphone**: pure `MicTest` (segmenter → `MicView`: level, floor, threshold, speech, phrases) + `MicTestRun` (mic thread in the window process; stops when not polled for 5 s, or after 5 min) |
 | `src/dictation/capture.rs` | `encode_clip` (a phrase → its own small Opus clip); hands phrases to an optional channel that closes when the recording ends; mic → level meter + mono Opus clip `<output_dir>/dictation/YYYY/MM/YYYY-MM-DD_HHMMSS.opus` (`.part` while writing, no sidecar) |
 | `src/dictation/client.rs` | hand-written loopback HTTP client for the transcriber (`health`, `status` (health + model), `load`, `dictate`, `shutdown`; no chunked replies); `AUDCAP_TRANSCRIBER_ADDR` overrides `127.0.0.1:8765` |
 | `src/dictation/service.rs` | `SpeechService`: launcher + health poller (active model, loading, failed) + stop plan; backs the tray's **Speech service** submenu (pure `menu_view`: "Start with <model>" when off, ticked active model + switch via `POST /api/load` when on, Stop). `MODELS` mirrors the transcriber's `CATALOG`. A tray start passes the model as `AUDCAP_TRANSCRIBER_MODEL`; dictation and the window start with the model loaded last |
@@ -153,9 +162,11 @@ markers). Files are `.part` while recording.
 `%APPDATA%\AudCap\config.toml` (override with `AUDCAP_CONFIG`): capture_mode,
 mic_device, system_device (render endpoint for loopback), output_dir, bitrate_kbps, auto_record, trigger_apps,
 release_grace_secs (10), min_duration_secs (30), hotkeys, start_with_windows,
-transcriber_dir (empty = auto), `[dictation]`: enabled (true), hold_key and
+transcriber_dir (empty = auto), web_port (8766, 0 = off), `[speech_api]` base_url/api_key/model (empty = off), `[dictation]`: enabled (true), hold_key and
 toggle_key (`KeyId` names, default `RightAlt`; empty = off), keep_audio (true),
-max_secs (300, clamped 5–600), paste_mode (`live` (default) | `end`).
+max_secs (300, clamped 5–600), paste_mode (`live` (default) | `end`), engine (`local` (default) =
+the transcriber phrase by phrase | `api` = `[speech_api]`, the whole clip in one request on release),
+noise_margin_db (10, clamped 3–30: speech threshold above the learned noise floor).
 Logs: `%APPDATA%\AudCap\logs` (`AUDCAP_LOG=debug` for more). A leftover
 `[transcription]` section from older builds is ignored.
 
@@ -163,7 +174,7 @@ Logs: `%APPDATA%\AudCap\logs` (`AUDCAP_LOG=debug` for more). A leftover
 
 One app for both pages; hash router in `App.svelte` (top bar: tabs + transcriber
 status). Tokens are CSS variables in `src/app.css` (light + dark via
-`prefers-color-scheme`) mapped into Tailwind with `@theme inline` (`bg-panel`,
+`data-theme` on `<html>`, see `lib/theme.ts`) mapped into Tailwind with `@theme inline` (`bg-panel`,
 `text-muted`, `text-me`, …); shared classes `.btn`, `.icon-btn`, `.input`,
 `.hint`, `.range` live there too. CSP in `index.html` allows only self +
 `http://127.0.0.1:8765`.
@@ -173,12 +184,16 @@ status). Tokens are CSS variables in `src/app.css` (light + dark via
 | `src/lib/api.ts` | `local` (same origin) and `transcriber` clients, `Config` type, `ApiError` |
 | `src/lib/transcriber.svelte.ts` | pure `reduce` (offline keeps last state; `finishedJobIds`) + `createTranscriber()`: one request at a time, next poll 2 s after the previous reply |
 | `src/lib/service.ts` | pure Start/Stop state (`settle`, `phase`): starting until the API answers or the launched process exits (failure = exit code + log tail), stopping until it goes away (15 s timeout); wired into `createTranscriber` (`service`, `startService`, `stopService`) and `components/ServiceButton.svelte` |
+| `src/lib/theme.ts` | System / Light / Dark (header button cycles it; localStorage `audcap.theme`); sets `data-theme` on `<html>`, which `app.css` keys the dark tokens on; `main.ts` applies it before mount |
 | `src/lib/numbers.ts` | `clampInt` for Settings number fields (same ranges as `Config::sanitized`) |
 | `src/lib/keys.ts` | dictation key choices for Settings: `COMMON_KEYS`, `keyLabel`, `keyOptions` (ids are `KeyId` names) |
 | `src/lib/transcript.ts` | parses the transcript `.md` (same regexes as `markdown.py`; the only reader of the format) |
 | `src/lib/{format,apps,recordings,listen}.ts` | times, day groups, trigger-app split/join, merge recordings + jobs, `sameFolder`, Listen gains |
-| `src/routes/Recordings.svelte` | list + detail; hints (offline / folder mismatch / no model); refresh on focus and when a job finishes |
-| `src/routes/Settings.svelte` | config form with Save/Discard bar when dirty; Dictation card (keys with Detect…, paste mode, keep audio); Transcription card (Start/Stop, Load model) |
+| `src/routes/Recordings.svelte` | list + detail; hints (offline / folder mismatch / no model); **Transcribe with** Transcriber / speech API (`lib/engine.ts` `pickEngine`, localStorage) when `[speech_api]` is set; polls `/api/speech/jobs`; refresh on focus and when a job finishes |
+| `src/lib/settingsTabs.ts` | Settings tabs (Recording / Dictation / Transcription) from the hash `#/settings/<tab>`; `dirtyTabs` (dot on tabs with unsaved edits) |
+| `src/lib/meter.ts` | mic-test meter: `levelDb`, `levelPct` |
+| `src/components/MicTest.svelte` | Dictation tab: live level bar with noise-floor and threshold marks, polls `/api/mic-test` every 100 ms, restarts on mic/margin change, stops when hidden |
+| `src/routes/Settings.svelte` | tabbed config form with one Save/Discard bar when dirty; Speech API card (base URL, key, model, Test via `/api/speech/test`); Dictation card (keys with Detect…, paste mode, keep audio); Transcription card (Start/Stop, Load model) |
 | `src/components/Player.svelte` | `<audio>` → Web Audio splitter → per-channel gain → both ears; exports `seek()`/`play()` |
 | `src/components/TranscriptView.svelte` | Show filter, timestamp seek, playing line highlight + scroll |
 

@@ -79,6 +79,10 @@ impl App {
         device::watch_default_devices(move || {
             let _ = dev_tx.send(());
         });
+        let web_host = crate::web_api::server::ServerHost::new(config_path.clone(), config::app_dir().join("logs").join("transcriber.log"));
+        if let Err(e) = crate::web_api::server::spawn(config.web_port, std::sync::Arc::new(web_host)) {
+            tracing::warn!("recordings API not started on port {}: {e}", config.web_port);
+        }
         let (power_tx, power_rx) = mpsc::channel();
         if let Err(e) = power::watch(power_tx) {
             tracing::warn!("no suspend/resume notifications: {e:#}");

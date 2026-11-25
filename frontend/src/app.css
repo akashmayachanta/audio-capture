@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 
-/* Design tokens. Light by default, dark when Windows is in dark mode. */
+/* Design tokens. Light by default; dark with data-theme="dark" on <html>
+   (lib/theme.ts: follows Windows unless the header button picks one). */
 :root {
   color-scheme: light dark;
   --bg: #f4f5f7;
@@ -28,31 +29,34 @@
   --card-shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.06);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111317;
-    --panel: #181b20;
-    --panel-2: #1f2228;
-    --raised: #23272e;
-    --fg: #e8eaee;
-    --muted: #9ba3b0;
-    --faint: #6b7380;
-    --line: #2a2e36;
-    --line-strong: #383d47;
-    --accent: #8b95f7;
-    --accent-soft: #262a48;
-    --on-accent: #0f1120;
-    --me: #3ccbb6;
-    --me-soft: #15302c;
-    --others: #f0a061;
-    --others-soft: #36261a;
-    --ok: #4ccb84;
-    --warn: #e6b04f;
-    --warn-soft: #33291a;
-    --danger: #f07171;
-    --sel: #232846;
-    --card-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
-  }
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #111317;
+  --panel: #181b20;
+  --panel-2: #1f2228;
+  --raised: #23272e;
+  --fg: #e8eaee;
+  --muted: #9ba3b0;
+  --faint: #6b7380;
+  --line: #2a2e36;
+  --line-strong: #383d47;
+  --accent: #8b95f7;
+  --accent-soft: #262a48;
+  --on-accent: #0f1120;
+  --me: #3ccbb6;
+  --me-soft: #15302c;
+  --others: #f0a061;
+  --others-soft: #36261a;
+  --ok: #4ccb84;
+  --warn: #e6b04f;
+  --warn-soft: #33291a;
+  --danger: #f07171;
+  --sel: #232846;
+  --card-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
 }
 
 @theme inline {

@@ -2,11 +2,20 @@
   import { onMount } from 'svelte'
   import Recordings from './routes/Recordings.svelte'
   import Settings from './routes/Settings.svelte'
+  import Icon from './components/Icon.svelte'
   import { createTranscriber } from './lib/transcriber.svelte'
+  import { applyTheme, loadTheme, nextTheme, saveTheme, themeLabel } from './lib/theme'
 
   type Route = 'recordings' | 'settings'
-  const routeOf = (): Route => (location.hash === '#/settings' ? 'settings' : 'recordings')
+  const routeOf = (): Route => (location.hash.startsWith('#/settings') ? 'settings' : 'recordings')
   let route = $state<Route>(routeOf())
+
+  let theme = $state(loadTheme())
+  $effect(() => applyTheme(theme))
+  const cycleTheme = () => {
+    theme = nextTheme(theme)
+    saveTheme(theme)
+  }
 
   const tx = createTranscriber()
   onMount(() => {
@@ -54,7 +63,7 @@
     </nav>
     <a
       class="flex items-center gap-2 rounded-full border border-line px-3 py-1 text-[12.5px] whitespace-nowrap text-muted no-underline hover:border-line-strong"
-      href="#/settings"
+      href="#/settings/transcription"
       title="Transcription settings"
     >
       <span
@@ -67,6 +76,9 @@
         ]}
       ></span>{status.text}
     </a>
+    <button type="button" class="icon-btn -ml-4" title={themeLabel(theme)} aria-label={themeLabel(theme)} onclick={cycleTheme}>
+      <Icon name={theme === 'light' ? 'sun' : theme === 'dark' ? 'moon' : 'monitor'} />
+    </button>
   </header>
   <!-- Both pages stay mounted: unsaved settings and the player survive switching tabs. -->
   <main class="relative min-h-0">

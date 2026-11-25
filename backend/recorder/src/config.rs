@@ -30,6 +30,17 @@ pub enum PasteMode {
     End,
 }
 
+/// Which service turns dictation into text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DictationEngine {
+    /// The local transcriber, phrase by phrase while you talk.
+    #[default]
+    Local,
+    /// The `[speech_api]` endpoint: the whole clip in one request when you stop.
+    Api,
+}
+
 /// Dictation: hold a key to talk, or double-tap it for hands-free. Key names
 /// are `dictation::keys::KeyId` names (`RightAlt`, `F13`, ...); empty = off.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,11 +54,40 @@ pub struct Dictation {
     /// Listening stops by itself after this long.
     pub max_secs: u64,
     pub paste_mode: PasteMode,
+    pub engine: DictationEngine,
+    /// Speech must be this many dB above the room's noise floor (3–30).
+    pub noise_margin_db: u32,
 }
 
 impl Default for Dictation {
     fn default() -> Self {
-        Self { enabled: true, hold_key: "RightAlt".into(), toggle_key: "RightAlt".into(), keep_audio: true, max_secs: 300, paste_mode: PasteMode::Live }
+        Self { enabled: true, hold_key: "RightAlt".into(), toggle_key: "RightAlt".into(), keep_audio: true, max_secs: 300, paste_mode: PasteMode::Live, engine: DictationEngine::Local, noise_margin_db: 10 }
+    }
+}
+
+/// An OpenAI-compatible speech-to-text API (`POST {base_url}/audio/transcriptions`),
+/// an alternative to the local transcriber; see `speech_api`. Empty = not set up.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpeechApi {
+    /// e.g. `https://api.openai.com/v1`
+    pub base_url: String,
+    /// Sent as `Authorization: Bearer`; empty = none.
+    pub api_key: String,
+    /// e.g. `whisper-1`
+    pub model: String,
+}
+
+impl SpeechApi {
+    pub fn configured(&self) -> bool {
+        !self.base_url.is_empty() && !self.model.is_empty()
+    }
+
+    pub fn sanitized(mut self) -> Self {
+        self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        self.api_key = self.api_key.trim().to_string();
+        self.model = self.model.trim().to_string();
+        self
     }
 }
 
@@ -73,7 +113,11 @@ pub struct Config {
     /// The Python transcriber's folder (with `pyproject.toml`) for the window's
     /// Start button; empty = found next to the exe or in the repo.
     pub transcriber_dir: PathBuf,
+    /// Loopback port of the recordings API for other local apps
+    /// (`web_api::server`, `http://127.0.0.1:<port>/api/`); 0 = off. Read at tray start.
+    pub web_port: u16,
     pub dictation: Dictation,
+    pub speech_api: SpeechApi,
 }
 
 /// Apps the detector knows by name; also the default allow-list.
@@ -108,7 +152,9 @@ impl Default for Config {
             hotkeys: Hotkeys::default(),
             start_with_windows: false,
             transcriber_dir: PathBuf::new(),
+            web_port: 8766,
             dictation: Dictation::default(),
+            speech_api: SpeechApi::default(),
         }
     }
 }
@@ -154,6 +200,8 @@ impl Config {
         self.release_grace_secs = self.release_grace_secs.clamp(1, 600);
         self.min_duration_secs = self.min_duration_secs.min(3600);
         self.dictation.max_secs = self.dictation.max_secs.clamp(5, 600);
+        self.dictation.noise_margin_db = self.dictation.noise_margin_db.clamp(3, 30);
+        self.speech_api = self.speech_api.sanitized();
         if self.output_dir.as_os_str().to_string_lossy().trim().is_empty() {
             self.output_dir = Config::default().output_dir;
         }
@@ -272,6 +320,19 @@ mod tests {
     }
 
     #[test]
+    fn dictation_engine_is_local_unless_api_is_chosen() {
+        let engine = |toml: &str| Config::parse(toml).unwrap().dictation.engine;
+        assert_eq!(engine(""), DictationEngine::Local, "configs from before the setting");
+        assert_eq!(engine("[dictation]
+engine = \"api\"
+"), DictationEngine::Api);
+        assert_eq!(engine("[dictation]
+engine = \"local\"
+"), DictationEngine::Local);
+        assert!(Config::default().to_toml().contains("engine = \"local\""));
+    }
+
+    #[test]
     fn dictation_paste_mode_is_live_or_end() {
         let mode = |toml: &str| Config::parse(toml).unwrap().dictation.paste_mode;
         assert_eq!(mode("[dictation]\npaste_mode = \"end\"\n"), PasteMode::End);
@@ -291,6 +352,21 @@ mod tests {
         assert!(!d.keep_audio);
         assert_eq!(d.hold_key, "RightAlt");
         assert_eq!(d.max_secs, 300);
+    }
+
+    #[test]
+    fn dictation_noise_margin_defaults_to_10_db_and_is_clamped() {
+        let m = |toml: &str| Config::parse(toml).unwrap().dictation.noise_margin_db;
+        assert_eq!(m(""), 10);
+        assert_eq!(m("[dictation]
+noise_margin_db = 0
+"), 3);
+        assert_eq!(m("[dictation]
+noise_margin_db = 99
+"), 30);
+        assert_eq!(m("[dictation]
+noise_margin_db = 14
+"), 14);
     }
 
     #[test]

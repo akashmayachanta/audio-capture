@@ -24,6 +24,8 @@ export type Job = {
   progress: number
   error: string
   created: number
+  /** `api` = a speech-API job (run by the tray); absent = the local transcriber's. */
+  source?: 'api'
 }
 
 export type Row = LocalRecording & { job: Job | null }
