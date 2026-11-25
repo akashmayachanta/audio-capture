@@ -40,6 +40,12 @@ const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const TYPE_BATCH_CHARS: usize = 4;
 const TYPE_BATCH_PAUSE: Duration = Duration::from_millis(8);
 
+/// After the text goes on the clipboard, clipboard history and other watchers open it to
+/// read the change; a Ctrl+V landing then finds it busy and silently pastes nothing. So
+/// wait this long, then until the clipboard can be opened (at most `CLIPBOARD_FREE_TIMEOUT`).
+const CLIPBOARD_SETTLE: Duration = Duration::from_millis(40);
+const CLIPBOARD_FREE_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// How long the dictation key and modifiers may stay down before the paste gives up waiting.
 const KEYS_UP_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long the pasted text stays on the clipboard before the old text returns.
@@ -192,6 +198,19 @@ fn set_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// Waits until no other program has the clipboard open, so the target's paste can read it.
+fn wait_clipboard_free() {
+    std::thread::sleep(CLIPBOARD_SETTLE);
+    let deadline = Instant::now() + CLIPBOARD_FREE_TIMEOUT;
+    while Instant::now() < deadline {
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            let _ = unsafe { CloseClipboard() };
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Puts the snapshot back as it was (an empty snapshot leaves the clipboard empty).
 fn restore(snapshot: &Snapshot) -> Result<()> {
     let _clipboard = Clipboard::open()?;
@@ -315,6 +334,7 @@ pub fn paste_text(text: &str) -> Result<PasteOutcome> {
         Method::Clipboard(old) => {
             set_text(text)?;
             let ours = unsafe { GetClipboardSequenceNumber() };
+            wait_clipboard_free();
             if !keys_up || !send_ctrl_v() {
                 return Ok(PasteOutcome::LeftOnClipboard);
             }
@@ -440,7 +460,10 @@ mod live {
             let mut buf = [0u16; 256];
             let n = GetWindowTextW(hwnd, &mut buf) as usize;
             let got = String::from_utf16_lossy(&buf[..n]);
+            let still_ours = GetForegroundWindow() == hwnd;
             let _ = DestroyWindow(hwnd);
+            // A paste that went to another window says nothing about the paste: report it as such.
+            assert!(still_ours || got == text, "INCONCLUSIVE: another window took the focus during the test; rerun with the desktop idle");
             assert_eq!(outcome, PasteOutcome::Pasted);
             assert_eq!(got, text, "the edit box got {got:?} instead of {text:?}");
             after();
@@ -458,6 +481,7 @@ mod tests {
     const CF_ENHMETAFILE: u32 = 14;
     const CF_HDROP: u32 = 15;
     const CF_LOCALE: u32 = 16;
+    // CF_DIB, CF_DIBV5, CF_BITMAP, CF_PALETTE and CF_UNICODETEXT come from the module.
     const CF_OWNERDISPLAY: u32 = 0x80;
     const CF_PRIVATEFIRST: u32 = 0x200;
     const HTML: u32 = 49_460; // a registered format, as a browser puts it there
@@ -535,6 +559,84 @@ mod tests {
                 assert!(live::read_format(CF_UNICODETEXT).starts_with(&text2), "the copied text must come back");
             },
         );
+    }
+
+    /// A 1x1 32-bit DIB: BITMAPINFOHEADER then one pixel.
+    fn tiny_dib() -> Vec<u8> {
+        let mut b = Vec::new();
+        for v in [40u32, 1, 1] {
+            b.extend_from_slice(&v.to_le_bytes()); // biSize, biWidth, biHeight
+        }
+        b.extend_from_slice(&1u16.to_le_bytes()); // planes
+        b.extend_from_slice(&32u16.to_le_bytes()); // bit count
+        for v in [0u32, 4, 0, 0, 0, 0] {
+            b.extend_from_slice(&v.to_le_bytes()); // compression, size, resolution, colours
+        }
+        b.extend_from_slice(&[0x11, 0x22, 0x33, 0xFF]);
+        b
+    }
+
+    /// DROPFILES for one path, as File Explorer's Ctrl+C puts it on the clipboard.
+    fn hdrop(path: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&20u32.to_le_bytes()); // pFiles: the paths start after this header
+        b.extend_from_slice(&[0u8; 12]); // pt.x, pt.y, fNC
+        b.extend_from_slice(&1u32.to_le_bytes()); // fWide
+        b.extend(path.encode_utf16().chain([0, 0]).flat_map(u16::to_le_bytes));
+        b
+    }
+
+    #[test]
+    #[ignore = "needs an interactive desktop; overwrites the clipboard"]
+    fn a_copied_image_survives_the_paste() {
+        let dib = tiny_dib();
+        let want = dib.clone();
+        live::roundtrip_with(
+            "after a screenshot",
+            move || live::set_formats(&[(CF_DIB, &dib)]),
+            move || assert!(live::read_format(CF_DIB).starts_with(&want), "the image must come back"),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs an interactive desktop; overwrites the clipboard"]
+    fn copied_files_survive_the_paste() {
+        let files = hdrop(r"C:\Windows\win.ini");
+        let want = files.clone();
+        live::roundtrip_with(
+            "after copying a file",
+            move || live::set_formats(&[(CF_HDROP, &files)]),
+            move || assert!(live::read_format(CF_HDROP).starts_with(&want), "the copied file list must come back"),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs an interactive desktop; overwrites the clipboard"]
+    fn an_empty_clipboard_is_left_empty() {
+        live::roundtrip_with(
+            "into an empty clipboard",
+            || live::set_formats(&[]),
+            || assert_eq!(live::clipboard_formats(), Vec::<u32>::new(), "the dictation must not stay on the clipboard"),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs an interactive desktop; overwrites the clipboard"]
+    fn ten_pastes_in_a_row_keep_a_browser_clipboard() {
+        let html = live::register(w!("HTML Format"));
+        let page = b"Version:0.9\r\n<b>keep me</b>".to_vec();
+        for i in 0..10 {
+            let (p1, p2) = (page.clone(), page.clone());
+            live::roundtrip_with(
+                &format!("dictation number {i}"),
+                move || {
+                    if i == 0 {
+                        live::set_formats(&[(html, &p1)]);
+                    }
+                },
+                move || assert!(live::read_format(html).starts_with(&p2), "the HTML must survive paste {i}"),
+            );
+        }
     }
 
     #[test]
