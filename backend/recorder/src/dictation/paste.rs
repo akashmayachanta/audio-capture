@@ -12,8 +12,8 @@ use anyhow::{anyhow, bail, Result};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard,
-    RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardFormatNameW,
+    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -27,6 +27,26 @@ const CF_UNICODETEXT: u32 = 13;
 const CF_LOCALE: u32 = 16;
 /// Formats Windows keeps alongside plain text (it synthesizes them from `CF_UNICODETEXT`).
 const TEXT_FORMATS: [u32; 4] = [CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT, CF_LOCALE];
+
+/// Registered formats that only describe the text (a Windows Information Protection tag
+/// from Edge/Office/VS Code, OLE and .NET data-object bookkeeping, clipboard-history
+/// flags): losing them loses nothing, so a clipboard of text plus these still counts as
+/// plain text. Without this, copying text from such an app made every dictation fall
+/// back to typing, which some apps (Windows 11 Notepad) garble.
+const METADATA_FORMAT_NAMES: [&str; 7] = [
+    "EnterpriseDataProtectionId",
+    "Ole Private Data",
+    "DataObject",
+    "CanIncludeInClipboardHistory",
+    "CanUploadToCloudClipboard",
+    "ExcludeClipboardContentFromMonitorProcessing",
+    "ClipboardHistoryItemId",
+];
+
+/// Characters per `SendInput` batch when typing, and the pause after each batch. One big
+/// burst makes some apps (Windows 11 Notepad) drop and repeat characters.
+const TYPE_BATCH_CHARS: usize = 4;
+const TYPE_BATCH_PAUSE: Duration = Duration::from_millis(8);
 
 /// How long the dictation key and modifiers may stay down before the paste gives up waiting.
 const KEYS_UP_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -81,11 +101,6 @@ fn method_for(previous: Previous) -> Method {
     }
 }
 
-/// UTF-16 units to type; newlines become spaces (a dictation is one line).
-fn typing_units(text: &str) -> Vec<u16> {
-    text.replace("\r\n", " ").replace(['\n', '\r'], " ").encode_utf16().collect()
-}
-
 struct Clipboard;
 
 impl Clipboard {
@@ -107,12 +122,28 @@ impl Drop for Clipboard {
     }
 }
 
+fn is_metadata_name(name: &str) -> bool {
+    METADATA_FORMAT_NAMES.iter().any(|m| m.eq_ignore_ascii_case(name))
+}
+
+/// The name of a registered clipboard format (ids from 0xC000); None for standard ones.
+fn format_name(format: u32) -> Option<String> {
+    if format < 0xC000 {
+        return None;
+    }
+    let mut buf = [0u16; 128];
+    let n = unsafe { GetClipboardFormatNameW(format, &mut buf) };
+    (n > 0).then(|| String::from_utf16_lossy(&buf[..n as usize]))
+}
+
 fn read_previous() -> Result<Previous> {
     let _clipboard = Clipboard::open()?;
     let mut formats = Vec::new();
     let mut f = unsafe { EnumClipboardFormats(0) };
     while f != 0 {
-        formats.push(f);
+        if !format_name(f).is_some_and(|n| is_metadata_name(&n)) {
+            formats.push(f);
+        }
         f = unsafe { EnumClipboardFormats(f) };
     }
     let text = if formats.contains(&CF_UNICODETEXT) { read_unicode_text() } else { None };
@@ -215,17 +246,34 @@ pub fn send_menu_mask_key() -> bool {
     ])
 }
 
+/// The text as batches of UTF-16 units, `per_batch` characters each; newlines become
+/// spaces (a dictation is one line) and a surrogate pair is never split across batches.
+fn typing_batches(text: &str, per_batch: usize) -> Vec<Vec<u16>> {
+    let flat = text.replace("\r\n", " ").replace(['\n', '\r'], " ");
+    let chars: Vec<char> = flat.chars().collect();
+    chars
+        .chunks(per_batch.max(1))
+        .map(|c| c.iter().collect::<String>().encode_utf16().collect())
+        .collect()
+}
+
 fn type_text(text: &str) -> bool {
-    let events: Vec<INPUT> = typing_units(text)
-        .into_iter()
-        .flat_map(|unit| {
-            [
-                key_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE),
-                key_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
-            ]
-        })
-        .collect();
-    events.is_empty() || send(&events)
+    for batch in typing_batches(text, TYPE_BATCH_CHARS) {
+        let events: Vec<INPUT> = batch
+            .into_iter()
+            .flat_map(|unit| {
+                [
+                    key_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE),
+                    key_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+                ]
+            })
+            .collect();
+        if !send(&events) {
+            return false;
+        }
+        std::thread::sleep(TYPE_BATCH_PAUSE);
+    }
+    true
 }
 
 /// Waits until Ctrl, Alt, Shift and Win are physically up (so the target sees a plain
@@ -250,7 +298,14 @@ pub fn paste_text(text: &str) -> Result<PasteOutcome> {
         return Ok(PasteOutcome::Pasted);
     }
     let keys_up = wait_keys_up(KEYS_UP_TIMEOUT);
-    match method_for(read_previous()?) {
+    let method = method_for(read_previous()?);
+    tracing::info!(
+        "dictation paste: {} chars via {}{}",
+        text.chars().count(),
+        if matches!(method, Method::Type) { "typing (clipboard holds non-text)" } else { "clipboard + Ctrl+V" },
+        if keys_up { "" } else { ", modifier keys still down" }
+    );
+    match method {
         Method::Type => {
             if !keys_up {
                 bail!("modifier keys are still held down");
@@ -432,12 +487,22 @@ mod tests {
     }
 
     #[test]
-    fn typing_units_are_utf16_with_newlines_as_spaces() {
-        assert_eq!(typing_units("hi"), vec![0x68, 0x69]);
-        assert_eq!(typing_units("a\r\nb\nc"), vec![0x61, 0x20, 0x62, 0x20, 0x63]);
-        // Outside the BMP: a surrogate pair, as SendInput wants it.
-        assert_eq!(typing_units("😀"), vec![0xD83D, 0xDE00]);
-        assert_eq!(typing_units("héllo")[1], 0xE9);
+    fn metadata_formats_do_not_make_the_clipboard_non_text() {
+        assert!(is_metadata_name("EnterpriseDataProtectionId"));
+        assert!(is_metadata_name("canincludeinclipboardhistory"));
+        assert!(is_metadata_name("Ole Private Data"));
+        assert!(is_metadata_name("DataObject"));
+        assert!(!is_metadata_name("HTML Format"));
+        assert!(!is_metadata_name("Rich Text Format"));
+    }
+
+    #[test]
+    fn typing_batches_keep_characters_whole() {
+        assert_eq!(typing_batches("abcdefghi", 4), vec![vec![0x61, 0x62, 0x63, 0x64], vec![0x65, 0x66, 0x67, 0x68], vec![0x69]]);
+        assert_eq!(typing_batches("a\r\nb", 4), vec![vec![0x61, 0x20, 0x62]]);
+        // A surrogate pair stays in one batch.
+        assert_eq!(typing_batches("x😀", 1), vec![vec![0x78], vec![0xD83D, 0xDE00]]);
+        assert!(typing_batches("", 4).is_empty());
     }
 
     #[test]
