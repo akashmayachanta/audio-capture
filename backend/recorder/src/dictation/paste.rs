@@ -1,10 +1,12 @@
-//! Puts dictated text into the focused field: clipboard + Ctrl+V when that loses
-//! nothing, otherwise typed with Unicode key events.
+//! Puts dictated text into the focused field with the clipboard and Ctrl+V, then puts
+//! back whatever the clipboard held before.
 //!
-//! Overwriting the clipboard destroys whatever else was on it (an image, copied
-//! files, rich text), and restoring only the text would not bring that back. So
-//! the clipboard is used only when it held plain text or nothing; otherwise the
-//! text is typed and the clipboard is left alone.
+//! Before pasting, every format on the clipboard is copied out (plain and rich text,
+//! HTML, copied files, images as DIBs, and the tags apps add), and afterwards all of it
+//! is put back unchanged. Typing the text with Unicode key events is only the fallback
+//! for a clipboard that can't be copied that way (GDI objects with no memory form, such
+//! as a lone enhanced metafile, app-private handles, or more than `MAX_SNAPSHOT_BYTES`):
+//! some apps (Windows 11 Notepad) drop and repeat characters that are typed this way.
 
 use std::time::{Duration, Instant};
 
@@ -12,8 +14,8 @@ use anyhow::{anyhow, bail, Result};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardFormatNameW,
-    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardSequenceNumber,
+    OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -21,27 +23,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
 };
 
-const CF_TEXT: u32 = 1;
-const CF_OEMTEXT: u32 = 7;
+const CF_BITMAP: u32 = 2;
+const CF_DIB: u32 = 8;
+const CF_PALETTE: u32 = 9;
 const CF_UNICODETEXT: u32 = 13;
-const CF_LOCALE: u32 = 16;
-/// Formats Windows keeps alongside plain text (it synthesizes them from `CF_UNICODETEXT`).
-const TEXT_FORMATS: [u32; 4] = [CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT, CF_LOCALE];
+const CF_DIBV5: u32 = 17;
+/// Standard formats whose data is a memory block: TEXT, SYLK, DIF, TIFF, OEMTEXT, DIB,
+/// PENDATA, RIFF, WAVE, UNICODETEXT, HDROP (copied files), LOCALE, DIBV5.
+const MEMORY_FORMATS: [u32; 13] = [1, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17];
 
-/// Registered formats that only describe the text (a Windows Information Protection tag
-/// from Edge/Office/VS Code, OLE and .NET data-object bookkeeping, clipboard-history
-/// flags): losing them loses nothing, so a clipboard of text plus these still counts as
-/// plain text. Without this, copying text from such an app made every dictation fall
-/// back to typing, which some apps (Windows 11 Notepad) garble.
-const METADATA_FORMAT_NAMES: [&str; 7] = [
-    "EnterpriseDataProtectionId",
-    "Ole Private Data",
-    "DataObject",
-    "CanIncludeInClipboardHistory",
-    "CanUploadToCloudClipboard",
-    "ExcludeClipboardContentFromMonitorProcessing",
-    "ClipboardHistoryItemId",
-];
+/// The most the clipboard may hold for it to be copied and put back (a large image).
+const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Characters per `SendInput` batch when typing, and the pause after each batch. One big
 /// burst makes some apps (Windows 11 Notepad) drop and repeat characters.
@@ -53,24 +45,14 @@ const KEYS_UP_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long the pasted text stays on the clipboard before the old text returns.
 const RESTORE_AFTER: Duration = Duration::from_millis(500);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Previous {
-    Text(String),
-    Empty,
-    /// Anything else (or text we could not read): must not be overwritten.
-    NonText,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Restore {
-    Text(String),
-    Clear,
-}
+/// What the clipboard held before the paste: each format and its bytes, in the order
+/// Windows listed them. Empty when the clipboard was empty.
+pub type Snapshot = Vec<(u32, Vec<u8>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Method {
-    /// Put the text on the clipboard, press Ctrl+V, then restore.
-    Clipboard(Restore),
+    /// Put the text on the clipboard, press Ctrl+V, then put the snapshot back.
+    Clipboard(Snapshot),
     /// Type it with Unicode key events; the clipboard is not touched.
     Type,
 }
@@ -82,23 +64,25 @@ pub enum PasteOutcome {
     LeftOnClipboard,
 }
 
-/// What the clipboard holds, from its format list and (when there is `CF_UNICODETEXT`) its text.
-fn classify(formats: &[u32], text: Option<String>) -> Previous {
-    if formats.is_empty() {
-        return Previous::Empty;
-    }
-    if formats.iter().any(|f| !TEXT_FORMATS.contains(f)) {
-        return Previous::NonText;
-    }
-    text.map_or(Previous::NonText, Previous::Text)
+/// A memory block, copyable byte for byte. Registered formats (0xC000 and up: HTML,
+/// RTF, app tags) always are.
+fn is_memory_format(f: u32) -> bool {
+    f >= 0xC000 || MEMORY_FORMATS.contains(&f)
 }
 
-fn method_for(previous: Previous) -> Method {
-    match previous {
-        Previous::Text(t) => Method::Clipboard(Restore::Text(t)),
-        Previous::Empty => Method::Clipboard(Restore::Clear),
-        Previous::NonText => Method::Type,
+/// The formats to copy out, or None when one can't be copied. A bitmap or palette
+/// handle needs no copy when a DIB is there too: Windows makes them from it again.
+fn snapshot_plan(formats: &[u32]) -> Option<Vec<u32>> {
+    let has_dib = formats.contains(&CF_DIB) || formats.contains(&CF_DIBV5);
+    let mut plan = Vec::new();
+    for &f in formats {
+        if is_memory_format(f) {
+            plan.push(f);
+        } else if !(has_dib && (f == CF_BITMAP || f == CF_PALETTE)) {
+            return None;
+        }
     }
+    Some(plan)
 }
 
 struct Clipboard;
@@ -122,56 +106,61 @@ impl Drop for Clipboard {
     }
 }
 
-fn is_metadata_name(name: &str) -> bool {
-    METADATA_FORMAT_NAMES.iter().any(|m| m.eq_ignore_ascii_case(name))
-}
-
-/// The name of a registered clipboard format (ids from 0xC000); None for standard ones.
-fn format_name(format: u32) -> Option<String> {
-    if format < 0xC000 {
-        return None;
-    }
-    let mut buf = [0u16; 128];
-    let n = unsafe { GetClipboardFormatNameW(format, &mut buf) };
-    (n > 0).then(|| String::from_utf16_lossy(&buf[..n as usize]))
-}
-
-fn read_previous() -> Result<Previous> {
-    let _clipboard = Clipboard::open()?;
+/// The formats on the clipboard, in Windows' order; the clipboard must be open.
+fn list_formats() -> Vec<u32> {
     let mut formats = Vec::new();
     let mut f = unsafe { EnumClipboardFormats(0) };
     while f != 0 {
-        if !format_name(f).is_some_and(|n| is_metadata_name(&n)) {
-            formats.push(f);
-        }
+        formats.push(f);
         f = unsafe { EnumClipboardFormats(f) };
     }
-    let text = if formats.contains(&CF_UNICODETEXT) { read_unicode_text() } else { None };
-    Ok(classify(&formats, text))
+    formats
 }
 
-/// The clipboard's `CF_UNICODETEXT`; the clipboard must be open.
-fn read_unicode_text() -> Option<String> {
+/// Copies everything off the clipboard, or None when some of it can't be copied.
+fn read_previous() -> Result<Option<Snapshot>> {
+    let _clipboard = Clipboard::open()?;
+    let Some(plan) = snapshot_plan(&list_formats()) else {
+        return Ok(None);
+    };
+    let mut snapshot = Vec::with_capacity(plan.len());
+    let mut total = 0;
+    for format in plan {
+        let Some(bytes) = read_bytes(format) else {
+            return Ok(None);
+        };
+        total += bytes.len();
+        if total > MAX_SNAPSHOT_BYTES {
+            return Ok(None);
+        }
+        snapshot.push((format, bytes));
+    }
+    Ok(Some(snapshot))
+}
+
+/// The bytes of a memory-block format; the clipboard must be open.
+fn read_bytes(format: u32) -> Option<Vec<u8>> {
     unsafe {
-        let handle = GetClipboardData(CF_UNICODETEXT).ok()?;
+        let handle = GetClipboardData(format).ok()?;
         let hglobal = HGLOBAL(handle.0);
-        let ptr = GlobalLock(hglobal) as *const u16;
+        let size = GlobalSize(hglobal);
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        let ptr = GlobalLock(hglobal) as *const u8;
         if ptr.is_null() {
             return None;
         }
-        let max = GlobalSize(hglobal) / 2;
-        let units = std::slice::from_raw_parts(ptr, max);
-        let len = units.iter().position(|&u| u == 0).unwrap_or(max);
-        let text = String::from_utf16_lossy(&units[..len]);
+        let bytes = std::slice::from_raw_parts(ptr, size).to_vec();
         let _ = GlobalUnlock(hglobal);
-        Some(text)
+        Some(bytes)
     }
 }
 
 /// Moves `bytes` into a movable global block and hands it to the clipboard as `format`.
 fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> Result<()> {
     unsafe {
-        let block = GlobalAlloc(GMEM_MOVEABLE, bytes.len())?;
+        let block = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1))?;
         let ptr = GlobalLock(block) as *mut u8;
         if ptr.is_null() {
             let _ = GlobalFree(Some(block));
@@ -203,15 +192,16 @@ fn set_text(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn restore(what: Restore) -> Result<()> {
-    match what {
-        Restore::Text(t) => set_text(&t),
-        Restore::Clear => {
-            let _clipboard = Clipboard::open()?;
-            unsafe { EmptyClipboard()? };
-            Ok(())
+/// Puts the snapshot back as it was (an empty snapshot leaves the clipboard empty).
+fn restore(snapshot: &Snapshot) -> Result<()> {
+    let _clipboard = Clipboard::open()?;
+    unsafe { EmptyClipboard()? };
+    for (format, bytes) in snapshot {
+        if let Err(e) = set_clipboard_bytes(*format, bytes) {
+            tracing::warn!("could not put clipboard format {format} back: {e:#}");
         }
     }
+    Ok(())
 }
 
 fn key_input(vk: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
@@ -298,11 +288,17 @@ pub fn paste_text(text: &str) -> Result<PasteOutcome> {
         return Ok(PasteOutcome::Pasted);
     }
     let keys_up = wait_keys_up(KEYS_UP_TIMEOUT);
-    let method = method_for(read_previous()?);
+    let method = match read_previous()? {
+        Some(snapshot) => Method::Clipboard(snapshot),
+        None => Method::Type,
+    };
     tracing::info!(
         "dictation paste: {} chars via {}{}",
         text.chars().count(),
-        if matches!(method, Method::Type) { "typing (clipboard holds non-text)" } else { "clipboard + Ctrl+V" },
+        match &method {
+            Method::Type => "typing (the clipboard can't be copied and put back)".to_string(),
+            Method::Clipboard(s) => format!("clipboard + Ctrl+V, {} clipboard formats kept", s.len()),
+        },
         if keys_up { "" } else { ", modifier keys still down" }
     );
     match method {
@@ -323,9 +319,9 @@ pub fn paste_text(text: &str) -> Result<PasteOutcome> {
                 return Ok(PasteOutcome::LeftOnClipboard);
             }
             std::thread::sleep(RESTORE_AFTER);
-            // Only put the old text back if nobody copied something in the meantime.
+            // Only put the old contents back if nobody copied something in the meantime.
             if unsafe { GetClipboardSequenceNumber() } == ours {
-                restore(old)?;
+                restore(&old)?;
             }
             Ok(PasteOutcome::Pasted)
         }
@@ -368,9 +364,22 @@ mod live {
 
     /// Replaces the clipboard with a single private format (stands in for an image or files).
     pub fn set_private_format(format: u32) {
+        set_formats(&[(format, b"precious")]);
+    }
+
+    /// Replaces the clipboard with these formats.
+    pub fn set_formats(formats: &[(u32, &[u8])]) {
         let _clipboard = Clipboard::open().expect("open the clipboard");
         unsafe { EmptyClipboard().unwrap() };
-        set_clipboard_bytes(format, b"precious").unwrap();
+        for (format, bytes) in formats {
+            set_clipboard_bytes(*format, bytes).unwrap();
+        }
+    }
+
+    /// One format's bytes from the clipboard (empty when it isn't there).
+    pub fn read_format(format: u32) -> Vec<u8> {
+        let _clipboard = Clipboard::open().expect("open the clipboard");
+        read_bytes(format).unwrap_or_default()
     }
 
     pub fn roundtrip_with(text: &str, prepare: impl FnOnce(), after: impl FnOnce()) {
@@ -433,7 +442,7 @@ mod live {
             let got = String::from_utf16_lossy(&buf[..n]);
             let _ = DestroyWindow(hwnd);
             assert_eq!(outcome, PasteOutcome::Pasted);
-            assert_eq!(got, text);
+            assert_eq!(got, text, "the edit box got {got:?} instead of {text:?}");
             after();
         }
     }
@@ -444,56 +453,39 @@ mod tests {
     use super::*;
 
     const CF_TEXT: u32 = 1;
-    const CF_BITMAP: u32 = 2;
+    const CF_METAFILEPICT: u32 = 3;
     const CF_OEMTEXT: u32 = 7;
-    const CF_UNICODETEXT: u32 = 13;
+    const CF_ENHMETAFILE: u32 = 14;
     const CF_HDROP: u32 = 15;
     const CF_LOCALE: u32 = 16;
+    const CF_OWNERDISPLAY: u32 = 0x80;
+    const CF_PRIVATEFIRST: u32 = 0x200;
+    const HTML: u32 = 49_460; // a registered format, as a browser puts it there
 
-    fn text(s: &str) -> Option<String> {
-        Some(s.to_string())
+    #[test]
+    fn an_empty_clipboard_is_copied_as_nothing() {
+        assert_eq!(snapshot_plan(&[]), Some(vec![]));
     }
 
     #[test]
-    fn an_empty_clipboard_is_empty() {
-        assert_eq!(classify(&[], None), Previous::Empty);
+    fn text_html_files_and_app_tags_are_copied() {
+        let browser = [HTML, CF_UNICODETEXT, 49_886, 49_410, CF_LOCALE, CF_TEXT, CF_OEMTEXT];
+        assert_eq!(snapshot_plan(&browser), Some(browser.to_vec()));
+        assert_eq!(snapshot_plan(&[CF_HDROP]), Some(vec![CF_HDROP]));
     }
 
     #[test]
-    fn plain_text_in_all_its_text_formats_is_text() {
-        let formats = [CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT, CF_LOCALE];
-        assert_eq!(classify(&formats, text("hello")), Previous::Text("hello".into()));
-        assert_eq!(classify(&[CF_UNICODETEXT], text("")), Previous::Text(String::new()));
+    fn an_image_is_copied_as_its_dib() {
+        // Windows lists a bitmap and palette made from the DIB; the DIB alone brings them back.
+        assert_eq!(snapshot_plan(&[CF_DIB, CF_BITMAP, CF_PALETTE, CF_DIBV5]), Some(vec![CF_DIB, CF_DIBV5]));
     }
 
     #[test]
-    fn anything_besides_text_makes_it_non_text() {
-        // Rich text from Word or a browser, an image, files: overwriting would lose them.
-        assert_eq!(classify(&[CF_UNICODETEXT, 49_300 /* CF_HTML */], text("x")), Previous::NonText);
-        assert_eq!(classify(&[CF_BITMAP], None), Previous::NonText);
-        assert_eq!(classify(&[CF_HDROP], None), Previous::NonText);
-    }
-
-    #[test]
-    fn text_formats_without_readable_text_are_not_restorable() {
-        assert_eq!(classify(&[CF_UNICODETEXT], None), Previous::NonText);
-    }
-
-    #[test]
-    fn the_method_depends_on_what_the_clipboard_holds() {
-        assert_eq!(method_for(Previous::Text("old".into())), Method::Clipboard(Restore::Text("old".into())));
-        assert_eq!(method_for(Previous::Empty), Method::Clipboard(Restore::Clear));
-        assert_eq!(method_for(Previous::NonText), Method::Type);
-    }
-
-    #[test]
-    fn metadata_formats_do_not_make_the_clipboard_non_text() {
-        assert!(is_metadata_name("EnterpriseDataProtectionId"));
-        assert!(is_metadata_name("canincludeinclipboardhistory"));
-        assert!(is_metadata_name("Ole Private Data"));
-        assert!(is_metadata_name("DataObject"));
-        assert!(!is_metadata_name("HTML Format"));
-        assert!(!is_metadata_name("Rich Text Format"));
+    fn handles_that_are_not_memory_make_it_uncopyable() {
+        assert_eq!(snapshot_plan(&[CF_BITMAP]), None, "a bitmap with no DIB");
+        assert_eq!(snapshot_plan(&[CF_ENHMETAFILE, CF_METAFILEPICT]), None);
+        assert_eq!(snapshot_plan(&[CF_UNICODETEXT, CF_OWNERDISPLAY]), None);
+        assert_eq!(snapshot_plan(&[CF_PRIVATEFIRST]), None);
     }
 
     #[test]
@@ -513,15 +505,34 @@ mod tests {
 
     #[test]
     #[ignore = "needs an interactive desktop; overwrites the clipboard"]
-    fn a_non_text_clipboard_is_typed_over_and_left_alone() {
+    fn a_registered_format_survives_the_paste() {
         let format = live::register(w!("AudCapTestPrivateFormat"));
         live::roundtrip_with(
-            "typed not pasted",
+            "pasted, then put back",
             || live::set_private_format(format),
             || {
                 let formats = live::clipboard_formats();
                 assert!(formats.contains(&format), "the private format must survive: {formats:?}");
-                assert!(!formats.contains(&CF_UNICODETEXT), "no text may have been put on the clipboard: {formats:?}");
+                assert!(!formats.contains(&CF_UNICODETEXT), "the dictation must not stay on the clipboard: {formats:?}");
+                assert_eq!(live::read_format(format), b"precious");
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "needs an interactive desktop; overwrites the clipboard"]
+    fn text_copied_from_a_browser_survives_the_paste() {
+        let html = live::register(w!("HTML Format"));
+        let page = b"Version:0.9\r\nStartHTML:0\r\n<b>copied from a page</b>".to_vec();
+        let text: Vec<u8> = "copied from a page".encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+        let (page2, text2) = (page.clone(), text.clone());
+        live::roundtrip_with(
+            "dictated text",
+            move || live::set_formats(&[(html, &page), (CF_UNICODETEXT, &text)]),
+            move || {
+                assert!(live::read_format(html).starts_with(&page2), "the HTML must come back");
+                // GlobalSize may round a block up, so compare the start.
+                assert!(live::read_format(CF_UNICODETEXT).starts_with(&text2), "the copied text must come back");
             },
         );
     }
