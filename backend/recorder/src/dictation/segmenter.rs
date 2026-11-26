@@ -19,8 +19,11 @@ pub const MAX_THRESHOLD: f32 = 0.6;
 const PER_DB: f32 = 1.0 / 50.0;
 /// Speech must be this many dB above the noise floor (`[dictation] noise_margin_db`).
 pub const DEFAULT_MARGIN_DB: f32 = 10.0;
-/// This much silence after speech ends a phrase (0.6 s).
+/// This much silence after speech ends a phrase (0.6 s)...
 const PAUSE_FRAMES: usize = 30;
+/// ...once the phrase is `min_phrase` long; a pause this long (2 s) ends it whatever its length,
+/// so a short remark is not held back (and padded with silence Whisper may fill with words).
+const LONG_PAUSE_FRAMES: usize = 100;
 /// Silence kept before and after the speech of a phrase (0.2 s).
 const PAD_FRAMES: usize = 10;
 /// Fewer speech frames than this before a pause is a click or a cough, not a phrase.
@@ -95,6 +98,8 @@ pub struct Segmenter {
     floor: NoiseFloor,
     margin_db: f32,
     threshold: f32,
+    /// A normal pause only ends a phrase this many frames long or longer (0 = any).
+    min_phrase: usize,
 }
 
 impl Default for Segmenter {
@@ -108,7 +113,14 @@ impl Segmenter {
     pub fn new(margin_db: f32, seed: Option<f32>) -> Self {
         let floor = NoiseFloor::new(seed);
         let threshold = floor.threshold(margin_db);
-        Self { samples: Vec::new(), levels: Vec::new(), speech_frames: 0, silence_run: 0, floor, margin_db, threshold }
+        Self { samples: Vec::new(), levels: Vec::new(), speech_frames: 0, silence_run: 0, floor, margin_db, threshold, min_phrase: 0 }
+    }
+
+    /// Phrases shorter than `secs` are not cut at a normal pause (`[dictation] min_phrase_secs`):
+    /// a sentence read with small pauses ("4 7 3 9") reaches the transcriber whole, with its context.
+    pub fn with_min_phrase(mut self, secs: f32) -> Self {
+        self.min_phrase = (secs.max(0.0) * 50.0) as usize; // 50 frames a second
+        self
     }
 
     pub fn noise_floor(&self) -> f32 {
@@ -148,7 +160,8 @@ impl Segmenter {
             self.keep_last(PAD_FRAMES);
             return None;
         }
-        if self.silence_run >= PAUSE_FRAMES {
+        let spoken = self.levels.len() - self.silence_run;
+        if self.silence_run >= LONG_PAUSE_FRAMES || (self.silence_run >= PAUSE_FRAMES && spoken >= self.min_phrase) {
             let real = self.speech_frames >= MIN_SPEECH_FRAMES;
             let end = self.levels.len() - (self.silence_run - PAD_FRAMES);
             let phrase = real.then(|| self.samples[..end * FRAME].to_vec());
@@ -204,6 +217,35 @@ mod tests {
 
     fn silence() -> Vec<f32> {
         vec![0.0; FRAME]
+    }
+
+    #[test]
+    fn a_short_sentence_with_small_pauses_stays_one_phrase() {
+        // "The invoice number is 4 7 3 9": pauses of 0.6-1 s inside a 4 s sentence.
+        let runs = [(true, 1.5), (false, 0.7), (true, 0.5), (false, 0.9), (true, 0.5), (false, 0.7), (true, 0.8), (false, 0.8)];
+        let mut s = Segmenter::default().with_min_phrase(5.0);
+        let mut out = feed(&mut s, &runs);
+        out.extend(s.flush().map(|p| p.len() as f64 / SAMPLE_RATE as f64));
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0] > 5.0, "{out:?}");
+        let mut old = Segmenter::default();
+        assert_eq!(feed(&mut old, &runs).len(), 4, "without a minimum every pause cuts, as before");
+    }
+
+    #[test]
+    fn a_long_dictation_is_still_cut_at_its_pauses_once_phrases_are_long_enough() {
+        let mut s = Segmenter::default().with_min_phrase(5.0);
+        let out = feed(&mut s, &[(true, 3.0), (false, 0.7), (true, 3.0), (false, 0.7), (true, 2.0), (false, 0.7), (true, 6.0), (false, 0.7)]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(out.iter().all(|p| *p >= 5.0), "{out:?}");
+    }
+
+    #[test]
+    fn a_long_silence_ends_even_a_short_phrase() {
+        let mut s = Segmenter::default().with_min_phrase(5.0);
+        let out = feed(&mut s, &[(true, 1.0), (false, 2.5)]);
+        assert_eq!(out.len(), 1, "a remark followed by 2 s of quiet is sent: {out:?}");
+        assert!(out[0] < 1.6, "without the silence: {out:?}");
     }
 
     /// Feeds `(is_speech, secs)` runs; returns the phrases that came out, in seconds.

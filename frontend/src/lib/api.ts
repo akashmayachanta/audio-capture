@@ -10,6 +10,7 @@ export type CaptureMode = 'both' | 'mic' | 'system'
 export type SpeechApi = { base_url: string; api_key: string; model: string }
 export type PasteMode = 'live' | 'end'
 export type DictationEngine = 'local' | 'api'
+export type MicReady = 'off' | 'recent' | 'always'
 
 /** backend/recorder/src/config.rs `Config`. */
 export type Config = {
@@ -36,10 +37,16 @@ export type Config = {
     max_secs: number
     /** live = hands-free pastes each phrase as it is transcribed; end = everything when the dictation ends. */
     paste_mode: PasteMode
-    /** local = the transcriber, phrase by phrase; api = `speech_api`, the whole clip when it ends. */
+    /** local = the transcriber, phrase by phrase; api = `speech_api` (phrase by phrase when `api_phrases`). */
     engine: DictationEngine
     /** Speech must be this many dB above the room's noise floor (3–30). */
     noise_margin_db: number
+    /** With the speech API: send each phrase while you keep talking (off = the whole clip at the end). */
+    api_phrases: boolean
+    /** Keep the mic open between dictations so their first words are not lost. */
+    mic_ready: MicReady
+    /** A pause only ends a phrase once it is this long (0–14 s; 0 = every pause). */
+    min_phrase_secs: number
   }
 }
 

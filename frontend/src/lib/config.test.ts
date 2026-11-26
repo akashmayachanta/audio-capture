@@ -17,7 +17,7 @@ const base: Config = {
   transcriber_dir: '',
   web_port: 8766,
   speech_api: { base_url: '', api_key: '', model: '' },
-  dictation: { enabled: true, hold_key: 'RightAlt', toggle_key: 'RightAlt', keep_audio: true, max_secs: 300, paste_mode: 'live', engine: 'local', noise_margin_db: 10 },
+  dictation: { enabled: true, hold_key: 'RightAlt', toggle_key: 'RightAlt', keep_audio: true, max_secs: 300, paste_mode: 'live', engine: 'local', noise_margin_db: 10, api_phrases: true, mic_ready: 'off', min_phrase_secs: 0 },
 }
 
 test('an untouched form takes everything from the file', () => {
