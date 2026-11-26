@@ -28,8 +28,8 @@ describe('parseTranscript', () => {
     expect(t.fields['Recording']).toBe('2026-11-13_1115_Chrome.opus')
     expect(t.fields['Duration']).toBe('1:02:05')
     expect(t.segments).toEqual([
-      { speaker: 'me', start: 12, text: 'Hello, can you hear me?' },
-      { speaker: 'others', start: 3723, text: 'Yes, loud and clear.' },
+      { speaker: 'me', name: 'Me', start: 12, text: 'Hello, can you hear me?' },
+      { speaker: 'others', name: 'Others', start: 3723, text: 'Yes, loud and clear.' },
     ])
   })
 
@@ -47,7 +47,13 @@ describe('parseTranscript', () => {
 
   it('accepts CRLF line endings', () => {
     expect(parseTranscript('# Transcript: a\r\n**[00:00:01] Others:** hi\r\n').segments).toEqual([
-      { speaker: 'others', start: 1, text: 'hi' },
+      { speaker: 'others', name: 'Others', start: 1, text: 'hi' },
     ])
+  })
+
+  it('reads any speaker label (a one-channel file from Whisper Max is "Speaker"), with colons in the text', () => {
+    const t = parseTranscript('- **Speakers:** Speaker\n**[00:00:04] Speaker:** Yes: the numbers first.')
+    expect(t.fields['Speakers']).toBe('Speaker')
+    expect(t.segments).toEqual([{ speaker: 'others', name: 'Speaker', start: 4, text: 'Yes: the numbers first.' }])
   })
 })

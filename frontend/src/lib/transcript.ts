@@ -3,10 +3,12 @@
 // lines are ignored, so hand edits survive.
 
 export type Speaker = 'me' | 'others'
-export type Segment = { speaker: Speaker; start: number; text: string }
+/** `speaker`: which side (the mic is "me", everyone else "others"); `name`: the label as written in the
+ * transcript ("Me", "Others", or e.g. "Speaker" for a one-channel file sent to a Whisper Max server). */
+export type Segment = { speaker: Speaker; name: string; start: number; text: string }
 export type Transcript = { title: string; fields: Record<string, string>; segments: Segment[] }
 
-const LINE = /^\*\*\[(\d+):(\d\d):(\d\d)\] (Me|Others):\*\* ?(.*)$/
+const LINE = /^\*\*\[(\d+):(\d\d):(\d\d)\] ([^*:\n]+?):\*\* ?(.*)$/
 const FIELD = /^- \*\*(.+?):\*\* (.*)$/
 
 export function parseTranscript(md: string): Transcript {
@@ -21,7 +23,8 @@ export function parseTranscript(md: string): Transcript {
     } else if ((m = line.match(LINE))) {
       const [, h, mi, s, who, said] = m
       t.segments.push({
-        speaker: who.toLowerCase() as Speaker,
+        speaker: who === 'Me' ? 'me' : 'others',
+        name: who,
         start: Number(h) * 3600 + Number(mi) * 60 + Number(s),
         text: said,
       })

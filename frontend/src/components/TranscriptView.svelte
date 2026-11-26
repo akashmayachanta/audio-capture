@@ -136,9 +136,10 @@
           >
           <span
             class={[
-              'mt-px self-start justify-self-start rounded-full px-2 py-px text-[11.5px] font-semibold',
+              'mt-px max-w-full self-start justify-self-start truncate rounded-full px-2 py-px text-[11.5px] font-semibold',
               s.speaker === 'me' ? 'bg-me-soft text-me' : 'bg-others-soft text-others',
-            ]}>{s.speaker === 'me' ? 'Me' : 'Others'}</span
+            ]}
+            title={s.name}>{s.name}</span
           >
           <span class="col-span-2 leading-[1.55] lg:col-span-1">{s.text}</span>
         </li>
