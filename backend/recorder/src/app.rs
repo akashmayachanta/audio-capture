@@ -133,6 +133,7 @@ impl App {
             // Several notifications arrive per switch (one per role/flow); restart once.
             if self.device_changes.try_iter().count() > 0 {
                 self.feed(Input::DeviceChanged);
+                self.dictation.device_changed();
             }
             while let Ok((event, ack)) = self.power.try_recv() {
                 self.on_power(event);
@@ -185,7 +186,11 @@ impl App {
                 self.dictation.suspend();
                 self.feed(Input::Suspend)
             }
-            PowerEvent::Resume => self.refresh_mic_usage(),
+            PowerEvent::Resume => {
+                // A stream kept open across sleep may be stale: start it afresh.
+                self.dictation.device_changed();
+                self.refresh_mic_usage()
+            }
         }
     }
 

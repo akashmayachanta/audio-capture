@@ -24,6 +24,7 @@ use crate::recordings::DICTATION_DIR;
 use crate::session::{append_ext, rename_with_retry};
 
 use super::segmenter::{level_of, Segmenter};
+use super::warm_mic::{Tap, WarmMic};
 
 /// Shorter than this is a blip (a tap that got through, a cough), not speech.
 const MIN_CLIP_SECS: f64 = 0.3;
@@ -144,12 +145,24 @@ fn run(mut cons: HeapCons<f32>, mut writer: Writer, shared: &Shared, phrases: Op
     }
 }
 
+/// What feeds a capture's ring; dropping it stops the audio (held only for that).
+#[allow(dead_code)]
+enum Feed {
+    /// A mic stream opened for this dictation.
+    Stream(CaptureStream),
+    /// A share of the mic kept open between dictations.
+    Tap(Tap),
+}
+
 pub struct Capture {
-    stream: Option<CaptureStream>,
+    feed: Option<Feed>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<Result<Writer>>>,
     part: PathBuf,
     path: PathBuf,
+    /// Audio from before the key press (the warm mic's pre-roll): not counted
+    /// when judging whether anything was said.
+    lead_secs: f64,
 }
 
 impl Capture {
@@ -160,8 +173,19 @@ impl Capture {
         let (prod, cons) = HeapRb::<f32>::new(SAMPLE_RATE as usize * 2).split();
         let mic_id = Some(cfg.mic_device.clone()).filter(|s| !s.is_empty());
         let stream = CaptureStream::spawn(Source::Mic, mic_id, prod);
-        let segmenter = Segmenter::new(cfg.dictation.noise_margin_db as f32, seed);
-        Self::with_ring(clip_path(&cfg.output_dir, now), cons, cfg.bitrate_kbps as i32 * 1000, Some(stream), phrases, segmenter)
+        let segmenter = Segmenter::new(cfg.dictation.noise_margin_db as f32, seed).with_min_phrase(cfg.dictation.min_phrase_secs as f32);
+        Self::with_ring(clip_path(&cfg.output_dir, now), cons, cfg.bitrate_kbps as i32 * 1000, Some(Feed::Stream(stream)), phrases, segmenter)
+    }
+
+    /// Like `start`, from the mic kept open between dictations: the recording
+    /// begins with the moment before the key press, and the room's noise floor
+    /// is already known.
+    pub fn start_warm(cfg: &Config, now: DateTime<Local>, warm: &WarmMic, phrases: Option<Sender<Vec<f32>>>, seed: Option<f32>) -> Result<Capture> {
+        let (cons, tap, lead) = warm.tap();
+        let segmenter = Segmenter::new(cfg.dictation.noise_margin_db as f32, warm.noise_floor().or(seed)).with_min_phrase(cfg.dictation.min_phrase_secs as f32);
+        let mut c = Self::with_ring(clip_path(&cfg.output_dir, now), cons, cfg.bitrate_kbps as i32 * 1000, Some(Feed::Tap(tap)), phrases, segmenter)?;
+        c.lead_secs = lead as f64 / SAMPLE_RATE as f64;
+        Ok(c)
     }
 
     /// A capture fed from a ring instead of the microphone, for live tests.
@@ -176,7 +200,7 @@ impl Capture {
         path: PathBuf,
         cons: HeapCons<f32>,
         bitrate_bps: i32,
-        stream: Option<CaptureStream>,
+        feed: Option<Feed>,
         phrases: Option<Sender<Vec<f32>>>,
         segmenter: Segmenter,
     ) -> Result<Capture> {
@@ -192,7 +216,7 @@ impl Capture {
             .name("dictation-capture".into())
             .spawn(move || run(cons, writer, &s, phrases, segmenter))
             .context("spawn the dictation thread")?;
-        Ok(Capture { stream, shared, thread: Some(thread), part, path })
+        Ok(Capture { feed, shared, thread: Some(thread), part, path, lead_secs: 0.0 })
     }
 
     /// Mic level for the overlay, 0..1.
@@ -216,7 +240,7 @@ impl Capture {
 
     /// Stops the mic and the thread; gives back the writer (not yet finished).
     fn stop(&mut self) -> Result<Writer> {
-        self.stream.take(); // no more audio
+        self.feed.take(); // no more audio
         self.shared.stop.store(true, Ordering::Release);
         let thread = self.thread.take().ok_or_else(|| anyhow!("already stopped"))?;
         thread.join().map_err(|_| anyhow!("the dictation thread panicked"))?
@@ -230,7 +254,7 @@ impl Capture {
         })?;
         let secs = writer.samples_written() as f64 / SAMPLE_RATE as f64;
         drop(writer.finish()?);
-        if secs < MIN_CLIP_SECS {
+        if secs - self.lead_secs < MIN_CLIP_SECS {
             let _ = std::fs::remove_file(&self.part);
             return Ok(None);
         }
@@ -252,7 +276,7 @@ impl Capture {
             }
             Err(_) => 0.0,
         };
-        if keep_audio && secs >= MIN_CLIP_SECS && rename_with_retry(&self.part, &self.path).is_ok() {
+        if keep_audio && secs - self.lead_secs >= MIN_CLIP_SECS && rename_with_retry(&self.part, &self.path).is_ok() {
             return;
         }
         let _ = std::fs::remove_file(&self.part);
@@ -315,6 +339,48 @@ mod tests {
         let tail = rx.recv_timeout(Duration::from_secs(3)).expect("the tail");
         assert!(tail.len() >= secs(0.5), "{}", tail.len());
         assert!(rx.recv_timeout(Duration::from_secs(3)).is_err(), "then the channel closes");
+    }
+
+    #[test]
+    fn a_warm_mic_dictation_starts_before_the_press_and_ends_at_the_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mic, cons) = HeapRb::<f32>::new(SAMPLE_RATE as usize * 4).split();
+        let warm = WarmMic::from_ring(cons);
+        // The room before the press (more than the pre-roll), then a word right at the press.
+        mic.push_slice(&vec![0.001; secs(1.5)]);
+        std::thread::sleep(Duration::from_millis(100));
+        let cfg = Config { output_dir: dir.path().to_path_buf(), ..Config::default() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cap = Capture::start_warm(&cfg, at(), &warm, Some(tx), None).unwrap();
+        mic.push_slice(&sine(secs(1.0), 0.3));
+        std::thread::sleep(Duration::from_millis(200));
+        let clip = cap.finish(false).unwrap().expect("a clip");
+        let expected = super::super::warm_mic::PREROLL_SECS as f64 + 1.0;
+        assert!((clip.secs - expected).abs() < 0.05, "pre-roll + the word, nothing else: {}", clip.secs);
+        let phrase = rx.recv_timeout(Duration::from_secs(3)).expect("the word as a phrase");
+        assert!(phrase.len() >= secs(1.0), "the whole word is in the phrase: {}", phrase.len());
+        // After the release the mic stays open, but nothing more reaches the finished dictation.
+        mic.push_slice(&sine(secs(0.5), 0.3));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+    }
+
+    #[test]
+    fn a_cancelled_tap_on_a_warm_mic_keeps_no_file() {
+        // AudCap's own Ctrl+V (and any quick Ctrl tap) starts and cancels a dictation at once:
+        // only the pre-roll was recorded, which must not count as a clip worth keeping.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mic, cons) = HeapRb::<f32>::new(SAMPLE_RATE as usize * 4).split();
+        let warm = WarmMic::from_ring(cons);
+        mic.push_slice(&sine(secs(1.0), 0.3));
+        std::thread::sleep(Duration::from_millis(100));
+        let cfg = Config { output_dir: dir.path().to_path_buf(), ..Config::default() };
+        let cap = Capture::start_warm(&cfg, at(), &warm, None, None).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        cap.cancel(true);
+        assert!(files(dir.path()).is_empty(), "{:?}", files(dir.path()));
+        let cap = Capture::start_warm(&cfg, at(), &warm, None, None).unwrap();
+        assert!(cap.finish(true).unwrap().is_none(), "a finished tap is no clip either");
     }
 
     #[test]

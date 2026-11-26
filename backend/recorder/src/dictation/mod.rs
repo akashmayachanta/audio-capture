@@ -6,7 +6,7 @@
 //! Transcription runs while the user is still talking: the capture thread cuts
 //! the audio into phrases at pauses (`segmenter`) and a second thread sends them
 //! to the transcriber one by one, in order. On release only the last phrase is
-//! left to do. `paste_mode` decides whether hands-free dictation pastes each
+//! left to do. The speech API engine does the same (`api_phrases`, on by default). `paste_mode` decides whether hands-free dictation pastes each
 //! phrase as it arrives or everything at the end.
 
 use std::collections::VecDeque;
@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 
 use chrono::Local;
 
-use crate::config::{self, Config, PasteMode};
+use crate::config::{self, Config, MicReady, PasteMode};
 use capture::Capture;
+use warm_mic::WarmMic;
 use client::{Client, DictateError};
 use controller::{Action, Controller, Input, State};
 use gesture::{Detector, Gesture};
@@ -42,6 +43,7 @@ pub mod paste;
 pub mod rawinput;
 pub mod segmenter;
 pub mod service;
+pub mod warm_mic;
 
 /// How long a finished dictation waits for the speech service to start and load its model.
 const SERVICE_WAIT: Duration = Duration::from_secs(90);
@@ -79,6 +81,9 @@ struct Work {
     cancel: Arc<AtomicBool>,
     rx: Receiver<WorkerMsg>,
 }
+
+/// `mic_ready = "recent"`: how long the mic stays open after a dictation.
+const RECENT_WARM: Duration = Duration::from_secs(5 * 60);
 
 /// True when a phrase is pasted as soon as its text arrives. Never during
 /// hold-to-talk: the held key (Right Alt) would turn Ctrl+V into Ctrl+Alt+V.
@@ -136,6 +141,7 @@ fn stream_worker(phrases: Receiver<Vec<f32>>, bitrate_bps: i32, cancel: Arc<Atom
             return;
         }
         match phrases.recv_timeout(Duration::from_millis(50)) {
+            Ok(_) if cancel.load(Ordering::Relaxed) => return, // see `api_stream_worker`
             Ok(samples) => {
                 let result = match capture::encode_clip(&samples, bitrate_bps) {
                     Ok(bytes) => transcribe_bytes(&client, &bytes, &cancel, &tx),
@@ -173,6 +179,48 @@ fn clip_worker(bytes: Vec<u8>, cancel: Arc<AtomicBool>, tx: Sender<WorkerMsg>) {
         }
         Some(Err(e)) => {
             let _ = tx.send(WorkerMsg::Done(Err(e)));
+        }
+    }
+}
+
+/// `[dictation] engine = "api"` with `api_phrases`: each phrase to the speech API
+/// as the capture hands it out, in order, with one id for the whole dictation.
+fn api_stream_worker(api: config::SpeechApi, phrases: Receiver<Vec<f32>>, bitrate_bps: i32, cancel: Arc<AtomicBool>, tx: Sender<WorkerMsg>) {
+    let session = uuid::Uuid::new_v4().simple().to_string();
+    let mut sent = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        match phrases.recv_timeout(Duration::from_millis(50)) {
+            // A cancelled capture still hands out its last phrase as it stops (a Ctrl tap
+            // flushes the warm mic's pre-roll): never send that.
+            Ok(_) if cancel.load(Ordering::Relaxed) => return,
+            Ok(samples) => {
+                let started = Instant::now();
+                let result = capture::encode_clip(&samples, bitrate_bps)
+                    .map_err(|e| format!("Could not encode the dictation: {e}"))
+                    .and_then(|bytes| crate::speech_api::dictate_phrase(&api, &bytes, &session));
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                match result {
+                    Ok(text) => {
+                        sent += 1;
+                        tracing::info!("dictation phrase {sent}: {:.1} s of audio, transcribed in {} ms", samples.len() as f32 / 48_000.0, started.elapsed().as_millis());
+                        let _ = tx.send(WorkerMsg::Piece(text));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Done(Err(e)));
+                        return;
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = tx.send(WorkerMsg::Done(Ok(sent)));
+                return;
+            }
         }
     }
 }
@@ -222,6 +270,10 @@ pub struct Dictation {
     fallback: Option<Vec<u8>>,
     /// The room's noise floor from the last dictation: the next one starts with it.
     noise_floor: Option<f32>,
+    /// The mic kept open between dictations (`mic_ready`), when it is.
+    warm: Option<WarmMic>,
+    /// When the last dictation ended (`mic_ready = "recent"`); a tap (Ctrl+C) is not one.
+    last_dictation: Option<Instant>,
 }
 
 impl Dictation {
@@ -265,6 +317,8 @@ impl Dictation {
             hands_free: false,
             fallback: None,
             noise_floor: None,
+            warm: None,
+            last_dictation: None,
         };
         match Overlay::new() {
             Ok(o) => d.overlay = Some(o),
@@ -385,7 +439,12 @@ impl Dictation {
                 WorkerMsg::Done(Ok(0)) if self.fallback.is_some() => {
                     // No phrase was found while recording: let the transcriber judge the whole clip.
                     let bytes = self.fallback.take().unwrap_or_default();
-                    self.spawn_work("dictation-transcribe", move |cancel, tx| clip_worker(bytes, cancel, tx));
+                    if self.uses_api() {
+                        let api = self.cfg.speech_api.clone();
+                        self.spawn_work("dictation-api", move |cancel, tx| api_worker(api, bytes, cancel, tx));
+                    } else {
+                        self.spawn_work("dictation-transcribe", move |cancel, tx| clip_worker(bytes, cancel, tx));
+                    }
                 }
                 WorkerMsg::Done(Ok(_)) => {
                     self.work = None;
@@ -431,7 +490,36 @@ impl Dictation {
         if let Some(o) = &mut self.overlay {
             o.tick();
         }
+        self.sync_warm(now);
         std::mem::take(&mut self.notices)
+    }
+
+    /// Opens or closes the mic kept between dictations, as `mic_ready` asks;
+    /// reopens it when another mic is chosen. Never while a dictation uses it.
+    fn sync_warm(&mut self, now: Instant) {
+        if self.capture.is_some() {
+            return;
+        }
+        let wanted = self.raw.is_some()
+            && match self.cfg.dictation.mic_ready {
+                MicReady::Off => false,
+                MicReady::Always => true,
+                MicReady::Recent => self.last_dictation.is_some_and(|t| now.duration_since(t) < RECENT_WARM),
+            };
+        let stale = self.warm.as_ref().is_some_and(|w| w.device() != self.cfg.mic_device);
+        if self.warm.is_some() && (!wanted || stale) {
+            self.warm = None;
+        }
+        if wanted && self.warm.is_none() {
+            self.warm = Some(WarmMic::open(&self.cfg.mic_device));
+        }
+    }
+
+    /// The default mic changed or the PC woke up: the kept-open mic reopens on the current device.
+    pub fn device_changed(&self) {
+        if let Some(w) = &self.warm {
+            w.restart();
+        }
     }
 
     fn on_gesture(&mut self, g: Gesture) {
@@ -465,16 +553,30 @@ impl Dictation {
                 self.cancel_work();
                 self.live_pasted = false;
                 self.hands_free = false;
-                // The API gets the whole clip at the end: no phrases, no stream worker.
+                // Without `api_phrases` the API gets the whole clip at the end: no phrases, no stream worker.
                 let (phrases_tx, phrases) = mpsc::channel();
-                let phrases_tx = (!self.uses_api()).then_some(phrases_tx);
+                let phrases_tx = (!self.uses_api() || self.cfg.dictation.api_phrases).then_some(phrases_tx);
                 let streaming = phrases_tx.is_some();
-                match Capture::start(&self.cfg, Local::now(), phrases_tx, self.noise_floor) {
+                if self.cfg.dictation.mic_ready != MicReady::Off && self.warm.is_none() && self.raw.is_some() {
+                    // "recent" after a quiet spell: opened now (this dictation may still lose
+                    // its first moment) and kept for the next ones.
+                    self.warm = Some(WarmMic::open(&self.cfg.mic_device));
+                }
+                let started = match &self.warm {
+                    Some(w) => Capture::start_warm(&self.cfg, Local::now(), w, phrases_tx, self.noise_floor),
+                    None => Capture::start(&self.cfg, Local::now(), phrases_tx, self.noise_floor),
+                };
+                match started {
                     Ok(c) => {
                         self.capture = Some(c);
                         if streaming {
                             let bitrate_bps = self.cfg.bitrate_kbps as i32 * 1000;
-                            self.spawn_work("dictation-stream", move |cancel, tx| stream_worker(phrases, bitrate_bps, cancel, tx));
+                            if self.uses_api() {
+                                let api = self.cfg.speech_api.clone();
+                                self.spawn_work("dictation-api-stream", move |cancel, tx| api_stream_worker(api, phrases, bitrate_bps, cancel, tx));
+                            } else {
+                                self.spawn_work("dictation-stream", move |cancel, tx| stream_worker(phrases, bitrate_bps, cancel, tx));
+                            }
                         }
                     }
                     Err(e) => self.queue.push_back(Input::CaptureFailed(format!("Could not start the microphone: {e}"))),
@@ -513,6 +615,7 @@ impl Dictation {
     /// Stops the mic. The phrases spoken so far are already transcribed (or on
     /// their way); the capture hands out the last one as it stops.
     fn finish(&mut self, env: &Env) {
+        self.last_dictation = Some(Instant::now());
         let Some(capture) = self.take_capture() else {
             self.cancel_work();
             self.queue.push_back(Input::TranscriptFailed("There was no recording to transcribe.".into()));
@@ -520,21 +623,19 @@ impl Dictation {
         };
         self.ensure_server(env);
         match capture.finish(self.cfg.dictation.keep_audio) {
-            Ok(Some(clip)) if self.uses_api() => {
-                let api = self.cfg.speech_api.clone();
-                self.spawn_work("dictation-api", move |cancel, tx| api_worker(api, clip.bytes, cancel, tx));
-                if let Some(o) = &mut self.overlay {
-                    o.show(Phase::Transcribing);
-                }
-            }
             Ok(Some(clip)) => {
                 if self.work.is_some() {
+                    // Phrases are on their way; the whole clip is only for when none was found.
                     self.fallback = Some(clip.bytes);
+                } else if self.uses_api() {
+                    let api = self.cfg.speech_api.clone();
+                    self.spawn_work("dictation-api", move |cancel, tx| api_worker(api, clip.bytes, cancel, tx));
                 } else {
                     self.spawn_work("dictation-transcribe", move |cancel, tx| clip_worker(clip.bytes, cancel, tx));
                 }
+                let phase = if self.uses_api() || env.service == ServiceState::Up { Phase::Transcribing } else { Phase::Starting };
                 if let Some(o) = &mut self.overlay {
-                    o.show(if env.service == ServiceState::Up { Phase::Transcribing } else { Phase::Starting });
+                    o.show(phase);
                 }
             }
             Ok(None) => {
@@ -605,6 +706,71 @@ mod tests {
         let msgs: Vec<WorkerMsg> = rx.try_iter().collect();
         assert!(matches!(&msgs[0], WorkerMsg::Phase(Phase::Transcribing)));
         assert!(matches!(&msgs[1], WorkerMsg::Done(Err(e)) if e.contains("Settings")), "{}", msgs.len());
+    }
+
+    /// A speech API that counts the requests it gets (and answers each with "hi").
+    fn counting_api() -> (config::SpeechApi, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                h.fetch_add(1, Ordering::SeqCst);
+                let _ = crate::web_api::server::read_request(&mut BufReader::new(s.try_clone().unwrap()));
+                let body = r#"{"text":"hi"}"#;
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        let api = config::SpeechApi { base_url: format!("http://127.0.0.1:{port}/v1"), api_key: String::new(), model: "m".into() };
+        (api, hits)
+    }
+
+    fn tone(secs: f32) -> Vec<f32> {
+        (0..(secs * 48_000.0) as usize).map(|n| 0.5 * (n as f32 * 0.04).sin()).collect()
+    }
+
+    #[test]
+    fn a_phrase_that_arrives_after_a_cancel_is_never_sent() {
+        // A Ctrl tap (Ctrl+C) starts a capture and cancels it at once; stopping the capture hands
+        // out its last phrase (with the warm mic: the moment before the press). It must not be
+        // transcribed: it may be someone talking, and nobody asked for it.
+        let (api, hits) = counting_api();
+        for _ in 0..20 {
+            let (phrases_tx, phrases) = mpsc::channel::<Vec<f32>>();
+            let (tx, rx) = mpsc::channel();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let c = cancel.clone();
+            let a = api.clone();
+            let worker = std::thread::spawn(move || api_stream_worker(a, phrases, 32_000, c, tx));
+            std::thread::sleep(Duration::from_millis(15)); // the worker is waiting for a phrase
+            cancel.store(true, Ordering::Relaxed); // DiscardCapture: cancel_work() first...
+            let _ = phrases_tx.send(tone(0.5)); // ...then the capture stops and flushes its phrase
+            drop(phrases_tx);
+            worker.join().unwrap();
+            assert!(rx.try_iter().next().is_none(), "a cancelled worker reports nothing");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "no request for a cancelled dictation");
+    }
+
+    #[test]
+    fn phrases_of_one_dictation_are_sent_in_order_and_all_reported() {
+        let (api, hits) = counting_api();
+        let (phrases_tx, phrases) = mpsc::channel::<Vec<f32>>();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || api_stream_worker(api, phrases, 32_000, Arc::new(AtomicBool::new(false)), tx));
+        for _ in 0..5 {
+            phrases_tx.send(tone(0.5)).unwrap();
+        }
+        drop(phrases_tx);
+        worker.join().unwrap();
+        let msgs: Vec<WorkerMsg> = rx.try_iter().collect();
+        let pieces = msgs.iter().filter(|m| matches!(m, WorkerMsg::Piece(t) if t == "hi")).count();
+        assert_eq!(pieces, 5);
+        assert!(matches!(msgs.last(), Some(WorkerMsg::Done(Ok(5)))));
+        assert_eq!(hits.load(Ordering::SeqCst), 5);
     }
 
     #[test]

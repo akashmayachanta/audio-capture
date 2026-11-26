@@ -6,7 +6,7 @@
   import Segmented from '../components/Segmented.svelte'
   import ServiceButton from '../components/ServiceButton.svelte'
   import Toggle from '../components/Toggle.svelte'
-  import { local, transcriber, type CaptureMode, type Config, type DictationEngine, type Device, type PasteMode } from '../lib/api'
+  import { local, transcriber, type CaptureMode, type Config, type DictationEngine, type Device, type MicReady, type PasteMode } from '../lib/api'
   import { joinTriggerApps, splitTriggerApps, type KnownApp } from '../lib/apps'
   import { rebase } from '../lib/config'
   import { keyOptions } from '../lib/keys'
@@ -99,7 +99,11 @@
           bitrate_kbps: clampInt(form.bitrate_kbps, 6, 128),
           release_grace_secs: clampInt(form.release_grace_secs, 1, 600),
           min_duration_secs: clampInt(form.min_duration_secs, 0, 3600),
-          dictation: { ...form.dictation, noise_margin_db: clampInt(form.dictation.noise_margin_db, 3, 30) },
+          dictation: {
+            ...form.dictation,
+            noise_margin_db: clampInt(form.dictation.noise_margin_db, 3, 30),
+            min_phrase_secs: clampInt(form.dictation.min_phrase_secs, 0, 14),
+          },
         }
       : null,
   )
@@ -204,6 +208,11 @@
   const PASTE_MODES: { value: PasteMode; label: string }[] = [
     { value: 'live', label: 'While I speak' },
     { value: 'end', label: 'When I finish' },
+  ]
+  const MIC_READY: { value: MicReady; label: string }[] = [
+    { value: 'off', label: 'Off' },
+    { value: 'recent', label: 'For 5 min after use' },
+    { value: 'always', label: 'Always' },
   ]
 
   const MODES: { value: CaptureMode; label: string }[] = [
@@ -337,7 +346,9 @@
             label="Transcribe with"
             help={form.dictation.engine === 'api'
               ? form.speech_api.base_url && form.speech_api.model
-                ? 'The whole dictation is sent to the speech API when you stop talking, and pasted at once.'
+                ? form.dictation.api_phrases
+                  ? 'Each phrase is sent to the speech API while you keep talking; the text is pasted at once when you finish.'
+                  : 'The whole dictation is sent to the speech API when you stop talking, and pasted at once.'
                 : 'Set up the Speech API on the Transcription tab first.'
               : 'The local transcriber turns each phrase into text while you keep talking.'}
           >
@@ -351,6 +362,21 @@
             <Segmented label="Paste the text" bind:value={form.dictation.paste_mode} options={PASTE_MODES} />
           </Field>
           {/if}
+          <Field
+            label="Keep the mic ready"
+            help={form.dictation.mic_ready === 'off'
+              ? 'The mic opens when you press the key. Windows can take up to a second to start it, so the first words may be lost.'
+              : 'The mic stays open (Windows shows it as in use) and only the last 0.3 s is held in memory, so a dictation starts with your first word. Nothing is kept or sent unless you press the key.'}
+          >
+            <Segmented label="Keep the mic ready" bind:value={form.dictation.mic_ready} options={MIC_READY} />
+          </Field>
+          <Field
+            label="Shortest phrase"
+            help="While you talk, a pause sends what you said so far. A pause only does that once the phrase is this long, so a sentence read with small pauses (a number, a name) is transcribed whole. 0 = every pause. Longer pauses (2 s) always send."
+          >
+            <input class="input w-20" type="number" min="0" max="14" bind:value={form.dictation.min_phrase_secs} />
+            <span class="text-muted">s</span>
+          </Field>
           <Field
             label="Speech margin"
             help="How far above the room's noise your voice must be. Raise it if background noise keeps phrases from ending; lower it if quiet words are missed. Try it with the test below."

@@ -37,8 +37,25 @@ pub enum DictationEngine {
     /// The local transcriber, phrase by phrase while you talk.
     #[default]
     Local,
-    /// The `[speech_api]` endpoint: the whole clip in one request when you stop.
+    /// The `[speech_api]` endpoint: phrase by phrase while you talk (see
+    /// `Dictation::api_phrases`), or the whole clip when you stop.
     Api,
+}
+
+/// Whether the dictation mic is kept open between dictations. Opening it on the
+/// key press loses what is said while Windows starts the device (0.5–1.2 s of
+/// silence on a laptop mic); kept open, the dictation starts with the last
+/// moment before the press and nothing is lost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MicReady {
+    /// Opened on each key press.
+    #[default]
+    Off,
+    /// Kept open for a few minutes after each dictation.
+    Recent,
+    /// Kept open while dictation is on.
+    Always,
 }
 
 /// Dictation: hold a key to talk, or double-tap it for hands-free. Key names
@@ -57,11 +74,20 @@ pub struct Dictation {
     pub engine: DictationEngine,
     /// Speech must be this many dB above the room's noise floor (3–30).
     pub noise_margin_db: u32,
+    /// With the speech API: send each phrase while you are still talking, so only
+    /// the last one is left when you stop. Off = the whole clip at the end.
+    pub api_phrases: bool,
+    /// Keep the mic open between dictations so their first words are not lost.
+    pub mic_ready: MicReady,
+    /// A pause only ends a phrase once it is this long (0–14 s; 0 = every pause
+    /// cuts). Longer phrases keep sentences whole for the transcriber (numbers
+    /// read digit by digit, names); shorter ones finish sooner after you stop.
+    pub min_phrase_secs: u32,
 }
 
 impl Default for Dictation {
     fn default() -> Self {
-        Self { enabled: true, hold_key: "RightAlt".into(), toggle_key: "RightAlt".into(), keep_audio: true, max_secs: 300, paste_mode: PasteMode::Live, engine: DictationEngine::Local, noise_margin_db: 10 }
+        Self { enabled: true, hold_key: "RightAlt".into(), toggle_key: "RightAlt".into(), keep_audio: true, max_secs: 300, paste_mode: PasteMode::Live, engine: DictationEngine::Local, noise_margin_db: 10, api_phrases: true, mic_ready: MicReady::Off, min_phrase_secs: 0 }
     }
 }
 
@@ -201,6 +227,7 @@ impl Config {
         self.min_duration_secs = self.min_duration_secs.min(3600);
         self.dictation.max_secs = self.dictation.max_secs.clamp(5, 600);
         self.dictation.noise_margin_db = self.dictation.noise_margin_db.clamp(3, 30);
+        self.dictation.min_phrase_secs = self.dictation.min_phrase_secs.min(14);
         self.speech_api = self.speech_api.sanitized();
         if self.output_dir.as_os_str().to_string_lossy().trim().is_empty() {
             self.output_dir = Config::default().output_dir;
@@ -339,6 +366,23 @@ engine = \"local\"
         assert_eq!(mode("[dictation]\npaste_mode = \"live\"\n"), PasteMode::Live);
         assert_eq!(mode("[dictation]\nkeep_audio = false\n"), PasteMode::Live, "configs from before the setting");
         assert!(Config::default().to_toml().contains("paste_mode = \"live\""));
+    }
+
+    #[test]
+    fn dictation_min_phrase_defaults_to_every_pause_and_is_capped() {
+        let m = |toml: &str| Config::parse(toml).unwrap().sanitized().dictation.min_phrase_secs;
+        assert_eq!(m(""), 0, "configs from before the setting");
+        assert_eq!(m("[dictation]\nmin_phrase_secs = 5\n"), 5);
+        assert_eq!(m("[dictation]\nmin_phrase_secs = 99\n"), 14, "a phrase is cut at 15 s anyway");
+    }
+
+    #[test]
+    fn dictation_mic_ready_is_off_unless_chosen() {
+        let ready = |toml: &str| Config::parse(toml).unwrap().dictation.mic_ready;
+        assert_eq!(ready(""), MicReady::Off, "configs from before the setting");
+        assert_eq!(ready("[dictation]\nmic_ready = \"always\"\n"), MicReady::Always);
+        assert_eq!(ready("[dictation]\nmic_ready = \"recent\"\n"), MicReady::Recent);
+        assert!(Config::default().to_toml().contains("mic_ready = \"off\""));
     }
 
     #[test]

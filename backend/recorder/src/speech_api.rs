@@ -112,11 +112,17 @@ pub fn error_message(status: u16, body: &str) -> String {
 
 /// Sends one WAV file.
 pub fn transcribe_wav(cfg: &SpeechApi, wav: &[u8], segments: bool, timeout: Duration) -> Result<Vec<Segment>, ApiError> {
+    transcribe_wav_with(cfg, wav, segments, timeout, &[])
+}
+
+/// `transcribe_wav` with extra form fields (empty values are left out).
+fn transcribe_wav_with(cfg: &SpeechApi, wav: &[u8], segments: bool, timeout: Duration, extra: &[(&str, &str)]) -> Result<Vec<Segment>, ApiError> {
     let boundary = format!("audcap-{}", uuid::Uuid::new_v4().simple());
     let mut fields = vec![("model", cfg.model.as_str()), ("response_format", if segments { "verbose_json" } else { "json" })];
     if segments {
         fields.push(("timestamp_granularities[]", "segment"));
     }
+    fields.extend(extra.iter().copied().filter(|(_, v)| !v.is_empty()));
     let body = multipart(&boundary, &fields, "audio.wav", "audio/wav", wav);
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(timeout)).http_status_as_error(false).build().into();
     let mut req = agent
@@ -141,6 +147,16 @@ pub fn transcribe_wav(cfg: &SpeechApi, wav: &[u8], segments: bool, timeout: Dura
 /// One dictation clip (mono Ogg Opus) → its text, in a single request. A
 /// silent clip gives "" without asking (Whisper invents text for silence).
 pub fn dictate(cfg: &SpeechApi, opus: &[u8]) -> Result<String, String> {
+    dictate_phrase(cfg, opus, "")
+}
+
+/// `dictate` for one phrase of a dictation sent phrase by phrase. `session` is
+/// one id for all the phrases of a dictation, sent as `audcap_session`: a
+/// Whisper Max server groups them for its review page (other APIs ignore it).
+/// The text so far is deliberately not sent as `prompt`: tested on real
+/// recordings, Whisper copied the earlier phrases' style (one lowercase phrase
+/// made the rest lowercase) and sometimes skipped speech, with no gain.
+pub fn dictate_phrase(cfg: &SpeechApi, opus: &[u8], session: &str) -> Result<String, String> {
     if !cfg.configured() {
         return Err("The speech API is not set up. Open Settings → Speech API.".into());
     }
@@ -149,8 +165,9 @@ pub fn dictate(cfg: &SpeechApi, opus: &[u8]) -> Result<String, String> {
         return Ok(String::new());
     }
     let wav = extract::wav(&piece.samples, OUT_RATE);
-    let segs = match transcribe_wav(cfg, &wav, true, DICTATION_TIMEOUT) {
-        Err(ApiError::NoSegments(_)) => transcribe_wav(cfg, &wav, false, DICTATION_TIMEOUT),
+    let extra = [("audcap_session", session)];
+    let segs = match transcribe_wav_with(cfg, &wav, true, DICTATION_TIMEOUT, &extra) {
+        Err(ApiError::NoSegments(_)) => transcribe_wav_with(cfg, &wav, false, DICTATION_TIMEOUT, &extra),
         r => r,
     }
     .map_err(|e| e.to_string())?;
@@ -547,7 +564,11 @@ mod tests {
                     req.method(),
                     req.uri().path(),
                     req.headers().get("authorization").map(|v| v.to_str().unwrap()).unwrap_or(""),
-                    String::from_utf8_lossy(req.body()).lines().filter(|l| l.contains("json")).collect::<Vec<_>>().join(",")
+                    String::from_utf8_lossy(req.body())
+                        .lines()
+                        .filter(|l| l.contains("json") || l.contains("audcap_session"))
+                        .collect::<Vec<_>>()
+                        .join(",")
                 ));
                 let mut s = stream;
                 let _ = write!(s, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
@@ -622,6 +643,22 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].starts_with("POST /v1/audio/transcriptions auth=Bearer sk-test verbose_json"), "{}", seen[0]);
+    }
+
+    #[test]
+    fn a_phrase_carries_the_dictation_id() {
+        let (url, seen) = fake_api(vec![(200, r#"{"text":"to Gachibowli"}"#)]);
+        assert_eq!(dictate_phrase(&cfg(&url), &clip(1, true), "abc").unwrap(), "to Gachibowli");
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].contains("name=\"audcap_session\""), "{}", seen[0]);
+        assert!(!seen[0].contains("prompt"), "{}", seen[0]);
+    }
+
+    #[test]
+    fn a_whole_dictation_sends_no_dictation_id() {
+        let (url, seen) = fake_api(vec![(200, r#"{"text":"hi"}"#)]);
+        dictate(&cfg(&url), &clip(1, true)).unwrap();
+        assert!(!seen.lock().unwrap()[0].contains("audcap_session"), "empty fields are left out");
     }
 
     #[test]
